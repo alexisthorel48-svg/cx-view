@@ -1,0 +1,16 @@
+/* CX-View Finder V4.1 */
+.finder-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:16px;min-height:520px}
+.finder-sidebar{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:auto;padding:8px 0}
+.finder-tree-row{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:8px 12px;cursor:pointer;color:var(--text2);font-size:.85rem}
+.finder-tree-row:hover,.finder-tree-row.active{background:rgba(255,210,26,.12);color:var(--text)}
+.finder-tree-row small{color:var(--text2)}
+.finder-main{min-width:0}
+.finder-crumb{font-size:.82rem;color:var(--text2);margin-top:5px}.finder-crumb b{color:var(--accent);padding:0 4px}
+.finder-drop{border:2px dashed var(--border);padding:20px;text-align:center;border-radius:10px;color:var(--text2);margin-bottom:12px;transition:.15s}.finder-drop.drag,.finder-drop:hover{border-color:var(--accent);background:rgba(255,210,26,.06)}
+.finder-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}.finder-toolbar input{min-width:220px;flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px}
+.finder-items{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:12px}
+.finder-folder,.finder-media{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;min-height:118px;cursor:pointer;display:flex;flex-direction:column;gap:5px}.finder-folder:hover,.finder-media:hover,.finder-media.selected{border-color:var(--accent);background:rgba(255,210,26,.07)}
+.finder-folder .finder-icon{font-size:2.4rem}.finder-folder strong,.finder-media strong{font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.finder-folder small,.finder-media small{font-size:.72rem;color:var(--text2)}
+.finder-media img,.finder-media .thumb-placeholder{height:76px;width:100%;object-fit:cover;background:var(--surface2);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:1.7rem}
+.import-choices{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}.days{display:flex;gap:8px;flex-wrap:wrap}.days label{font-size:.8rem;text-transform:none!important;letter-spacing:0!important;color:var(--text)!important}
+@media(max-width:800px){.finder-layout{grid-template-columns:1fr}.finder-sidebar{max-height:220px}}

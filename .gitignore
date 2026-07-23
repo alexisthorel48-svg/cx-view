@@ -1,0 +1,66 @@
+# Secrets et configuration locale
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Dépendances
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build et cache
+dist/
+build/
+.next/
+.cache/
+coverage/
+tmp/
+temp/
+
+# Process manager
+.pm2/
+*.pid
+*.pid.lock
+
+# Fichiers médias et données générées
+uploads/
+media/
+storage/
+captures/
+screenshots/
+thumbnails/
+processed/
+cache/
+
+# Sauvegardes locales
+*.bak
+*.backup
+*.old
+*.orig
+*backup_*
+server.js.backup*
+server.js.bak*
+
+# Base de données locale
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
