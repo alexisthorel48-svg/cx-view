@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0a0c10">
   <title>CX View</title>
-  <script>try{const t=localStorage.getItem('cx-view-theme');document.documentElement.dataset.theme=(t==='light'||t==='dark')?t:(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark')}catch(e){document.documentElement.dataset.theme='dark'}</script>
   <link rel="stylesheet" href="/css/v2.css?v=0.10.1">
   <link rel="stylesheet" href="/css/v2-design-system.css">
   <link rel="stylesheet" href="/css/v2-media.css?v=0.10.4">
@@ -15,11 +14,9 @@
   <link rel="stylesheet" href="/css/v2-screens-v242.css">
   <link rel="stylesheet" href="/css/v2-scheduler.css">
   <link rel="stylesheet" href="/css/v2-monitoring.css">
-  <link rel="stylesheet" href="/css/v2-scenes.css?v=priority1-20260727">
+  <link rel="stylesheet" href="/css/v2-scenes.css">
   <link rel="stylesheet" href="/css/v2-fleet-v29.css?v=0.10.3b">
   <link rel="stylesheet" href="/css/v2-reports.css">
-  <link rel="stylesheet" href="/css/v2-themes.css?v=0.12.0">
-  <link rel="stylesheet" href="/css/v2-player-updates.css?v=0.17.0">
 </head>
 <body>
 <div id="app" class="app-shell">
@@ -27,7 +24,7 @@
     <div class="brand">
       <div class="brand-mark small">CX</div>
       <div class="brand-copy"><strong>CX View</strong><span>Digital Signage</span></div>
-      <span class="sidebar-version">0.12.1</span>
+      <span class="sidebar-version">0.10.1</span>
     </div>
 
     <nav id="nav" class="nav">
@@ -66,9 +63,6 @@
         <a href="/accounts" data-route="accounts">
           <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-text">Utilisateurs</span>
         </a>
-        <a href="/player-updates" data-route="player-updates">
-          <span class="nav-icon" aria-hidden="true">⬆</span><span class="nav-text">Mises à jour Player</span>
-        </a>
       </div>
     </nav>
 
@@ -86,9 +80,6 @@
         <div><div id="breadcrumb" class="eyebrow">CX View / Tableau de bord</div><h1 id="page-title">Tableau de bord</h1></div>
       </div>
       <div class="top-actions">
-        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Changer de thème" title="Changer de thème">
-          <span class="theme-sun" aria-hidden="true">☀</span><span class="theme-moon" aria-hidden="true">☾</span>
-        </button>
         <div id="environment" class="env-pill"><span></span>ADMIN</div>
         <div class="user-chip">
           <div id="avatar" class="avatar">CX</div>
@@ -102,17 +93,15 @@
 <script src="/js/v2-api.js"></script>
 <script src="/js/v2-ui.js"></script>
 <script src="/js/v2-design-system-page.js"></script>
-<script src="/js/v2-media.js?v=priority1-20260727?v=0.10.4"></script>
+<script src="/js/v2-media.js?v=0.10.4"></script>
 <script src="/js/v2-playlists.js"></script>
 <script src="/js/v2-workspaces.js"></script>
-<script src="/js/v2-screens.js?v=20260727-playlist-assignment-real"></script>
+<script src="/js/v2-screens.js"></script>
 <script src="/js/v2-scheduler.js"></script>
 <script src="/js/v2-monitoring.js"></script>
-<script src="/js/v2-scenes.js?v=priority1-20260727"></script>
+<script src="/js/v2-scenes.js"></script>
 <script src="/js/v2-fleet-v29.js?v=0.10.3b"></script>
 <script src="/js/v2-reports.js"></script>
-<script src="/js/v2-theme.js?v=0.12.1"></script>
-<script src="/js/v2-player-updates.js?v=0.17.0"></script>
 <script src="/js/v2-app.js?v=0.10.2"></script>
 </body>
 </html>

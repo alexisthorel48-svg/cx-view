@@ -12,32 +12,10 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 
 const app = express();
-const REBUILD_SAFE_MODE = String(process.env.REBUILD_SAFE_MODE || '').toLowerCase() === 'true';
-
-if (REBUILD_SAFE_MODE) {
-  console.log('🔒 CX-View fonctionne en REBUILD_SAFE_MODE');
-}
-const cxViewV31 = require('./modules/cx_view_v31');
-const cxViewV3 = require('./modules/cx_view_v3');
-const cxViewV24 = require('./modules/cx_view_v24');
-const cxViewV241 = require('./modules/cx_view_v241');
-const cxViewV242 = require('./modules/cx_view_v242');
-const cxViewV25 = require('./modules/cx_view_v25');
-const cxViewV26 = require('./modules/cx_view_v26');
-const cxViewV27 = require('./modules/cx_view_v27');
-const cxViewV28 = require('./modules/cx_view_v28');
-const cxViewV29 = require('./modules/cx_view_v29');
-const cxViewV30 = require('./modules/cx_view_v30');
-const cxViewV32 = require('./modules/cx_view_v32');
-const cxViewV33 = require('./modules/cx_view_v33');
-const cxViewV34 = require('./modules/cx_view_v34');
-const cxViewV35 = require('./modules/cx_view_v35');
-const cxViewIntegrationsV1 = require('./modules/cx_view_integrations_v1');
 
 // CXVIEW_REALTIME_V64
 const playerSockets = new Map();
 function notifyPlayer(pairingCode, payload = { type: 'sync' }) {
-  if (REBUILD_SAFE_MODE) return false;
   const code = String(pairingCode || '').toUpperCase();
   const socket = playerSockets.get(code);
   if (socket && socket.readyState === 1) {
@@ -60,45 +38,8 @@ const q = (sql, p) => pool.query(sql, p);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// En reconstruction, aucune requête provenant d'un Player ne doit être traitée.
-app.use((req, res, next) => {
-  if (
-    REBUILD_SAFE_MODE &&
-    (
-      req.path.startsWith('/api/player') ||
-      req.path.startsWith('/api/v4/player')
-    )
-  ) {
-    return res.status(503).json({
-      error: 'Player désactivé sur cet environnement de reconstruction'
-    });
-  }
-
-  next();
-});
 app.use('/files', express.static(MEDIA_ROOT));
 app.use(express.static(path.join(__dirname, 'public')));
-
-// CX_VIEW_V2_SPA_ROUTES
-app.get([
-  '/dashboard',
-  '/clients',
-  '/accounts',
-  '/media',
-  '/playlists',
-  '/screens', '/scheduler',
-  '/schedule',
-  '/monitoring',
-  '/scenes',
-  '/player-updates',
-  '/stats',
-  '/history',
-  '/design-system'
-], (req, res) => {
-  res.sendFile(__dirname + '/public/app.html');
-});
-
 
 app.use(session({
   store: new PgSession({ pool, tableName: 'cx_sessions', createTableIfMissing: false }),
@@ -129,10 +70,7 @@ const superOnly = (req, res, next) => {
 
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
-app.get('/playlist-preview', auth, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'playlist-preview.html'));
-});
-app.get(['/', '/dashboard', '/media', '/playlists', '/screens', '/clients', '/workspaces', '/schedule', '/monitoring', '/scenes', '/history', '/stats', '/accounts', '/design-system'], auth, (req, res) => {
+app.get(['/', '/dashboard', '/media', '/playlists', '/screens', '/clients', '/history', '/stats', '/accounts'], auth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
 });
 
@@ -248,14 +186,6 @@ app.delete('/api/clients/:id', adminOnly, async (req, res) => {
   await q('DELETE FROM cx_clients WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 });
-
-cxViewV31.register({ app, q, auth, adminOnly, notifyPlayer, notifyScreens, MEDIA_ROOT, PUBLIC_BASE_URL });
-cxViewV24.register({ app, q, auth, adminOnly, superOnly, notifyPlayer });
-cxViewV241.register({ app, q, auth, adminOnly, notifyPlayer });
-cxViewV242.register({ app, q, auth, adminOnly, notifyPlayer });
-cxViewV25.register({ app, q, pool, auth, adminOnly, notifyPlayer });
-cxViewV26.register({ app, q, auth, adminOnly, notifyPlayer });
-cxViewV27.register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_BASE_URL });
 
 // ─── FOLDERS ─────────────────────────────────────────────────────────────────
 app.get('/api/folders', auth, async (req, res) => {
@@ -417,84 +347,6 @@ app.post('/api/playlists/:id/items', adminOnly, async (req, res) => {
      is_priority||false, priority_interval_minutes||null, priority_count||1]
   );
   res.json(r.rows[0]);
-});
-
-// V0.13 — opérations groupées et duplication des playlists
-app.post('/api/playlists/:id/items/bulk', adminOnly, async (req, res) => {
-  const mediaIds = Array.isArray(req.body.media_ids) ? req.body.media_ids.map(Number).filter(Boolean) : [];
-  const duration = Math.max(1, Number(req.body.duration_seconds) || 10);
-  if (!mediaIds.length) return res.status(400).json({ error: 'Aucun média sélectionné' });
-  const pos = await q('SELECT COALESCE(MAX(position),-1) AS max FROM cx_playlist_items WHERE playlist_id=$1', [req.params.id]);
-  let position = Number(pos.rows[0].max) + 1;
-  const created = [];
-  for (const mediaId of mediaIds) {
-    const r = await q(
-      `INSERT INTO cx_playlist_items(playlist_id,item_type,media_id,position,duration_seconds,play_forever,
-       schedule_days,is_priority,priority_count,widget_config)
-       VALUES($1,'MEDIA',$2,$3,$4,false,'all',false,1,'{}') RETURNING *`,
-      [req.params.id, mediaId, position++, duration]
-    );
-    created.push(r.rows[0]);
-  }
-  res.json({ ok: true, items: created });
-});
-
-app.put('/api/playlists/:pid/items/bulk', adminOnly, async (req, res) => {
-  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
-  const patch = req.body.patch || {};
-  if (!ids.length) return res.status(400).json({ error: 'Aucun contenu sélectionné' });
-  const allowed = {
-    duration_seconds: v => Math.max(1, Number(v) || 10),
-    active: v => v !== false,
-    schedule_start: v => v || null,
-    schedule_end: v => v || null,
-    schedule_days: v => v || 'all',
-    schedule_time_from: v => v || null,
-    schedule_time_to: v => v || null,
-    play_forever: v => !!v,
-    is_priority: v => !!v,
-    priority_interval_minutes: v => v ? Number(v) : null,
-    priority_count: v => Math.max(1, Number(v) || 1)
-  };
-  const keys = Object.keys(patch).filter(k => allowed[k]);
-  if (!keys.length) return res.status(400).json({ error: 'Aucun paramètre compatible' });
-  const values = keys.map(k => allowed[k](patch[k]));
-  const setSql = keys.map((k, i) => `${k}=$${i + 1}`).join(',');
-  values.push(req.params.pid, ids);
-  await q(`UPDATE cx_playlist_items SET ${setSql} WHERE playlist_id=$${keys.length + 1} AND id=ANY($${keys.length + 2}::int[])`, values);
-  res.json({ ok: true, updated: ids.length });
-});
-
-app.post('/api/playlists/:pid/items/delete-bulk', adminOnly, async (req, res) => {
-  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
-  if (!ids.length) return res.status(400).json({ error: 'Aucun contenu sélectionné' });
-  await q('DELETE FROM cx_playlist_items WHERE playlist_id=$1 AND id=ANY($2::int[])', [req.params.pid, ids]);
-  res.json({ ok: true, deleted: ids.length });
-});
-
-app.delete('/api/playlists/:id/items', adminOnly, async (req, res) => {
-  await q('DELETE FROM cx_playlist_items WHERE playlist_id=$1', [req.params.id]);
-  res.json({ ok: true });
-});
-
-app.post('/api/playlists/:id/duplicate', adminOnly, async (req, res) => {
-  const source = await q('SELECT * FROM cx_playlists WHERE id=$1', [req.params.id]);
-  if (!source.rows[0]) return res.status(404).json({ error: 'Playlist introuvable' });
-  const p = source.rows[0];
-  const copy = await q(
-    'INSERT INTO cx_playlists(name,client_id,description) VALUES($1,$2,$3) RETURNING *',
-    [`${p.name} — copie`, p.client_id, p.description]
-  );
-  await q(
-    `INSERT INTO cx_playlist_items(playlist_id,item_type,media_id,widget_type,widget_config,position,duration_seconds,
-      play_forever,active,is_priority,priority_interval_minutes,priority_count,schedule_start,schedule_end,schedule_days,
-      schedule_time_from,schedule_time_to)
-     SELECT $1,item_type,media_id,widget_type,widget_config,position,duration_seconds,play_forever,active,is_priority,
-      priority_interval_minutes,priority_count,schedule_start,schedule_end,schedule_days,schedule_time_from,schedule_time_to
-     FROM cx_playlist_items WHERE playlist_id=$2 ORDER BY position`,
-    [copy.rows[0].id, req.params.id]
-  );
-  res.json(copy.rows[0]);
 });
 
 app.put('/api/playlists/:pid/items/:id', adminOnly, async (req, res) => {
@@ -663,16 +515,6 @@ app.get('/api/history', auth, async (req, res) => {
   res.json(r.rows);
 });
 
-cxViewV3.register({app,q,auth,adminOnly,superOnly,notifyPlayer,notifyScreens,PUBLIC_BASE_URL,MEDIA_ROOT});
-cxViewV28.register({ app, q, auth, adminOnly, notifyPlayer });
-cxViewV29.register({ app, q, auth, notifyPlayer });
-cxViewV30.register({ app, q, auth });
-cxViewV32.register({ app, q, auth, adminOnly });
-cxViewV33.register({ app, q, auth });
-cxViewV34.register({ app, q, superOnly, MEDIA_ROOT, PUBLIC_BASE_URL, notifyPlayer });
-cxViewV35.register({ app, q, PUBLIC_BASE_URL });
-cxViewIntegrationsV1.register({ app, q, auth, adminOnly });
-
 // ─── API PLAYER ───────────────────────────────────────────────────────────────
 app.get('/api/player/:code', async (req, res) => {
   try {
@@ -719,11 +561,6 @@ app.get('/api/player/:code', async (req, res) => {
       screen: { id: screen.id, name: screen.name, width: screen.width_px, height: screen.height_px,
         orientation: screen.orientation, layout: screen.layout, standby_color: screen.standby_color,
         display_mode: screen.display_mode || 'WINDOW', monitor_id: Number(screen.monitor_id || 0),
-        player_window_mode: screen.player_window_mode || (screen.display_mode === 'KIOSK' ? 'FULLSCREEN' : 'WINDOW'),
-        window: { x:Number(screen.window_x||0), y:Number(screen.window_y||0), width:Number(screen.window_width_px||screen.width_px), height:Number(screen.window_height_px||screen.height_px), corner_mode:screen.window_corner_mode||'SQUARE', corner_radius:Number(screen.window_corner_radius_px||0), always_on_top:screen.always_on_top!==false, hide_cursor:screen.hide_cursor!==false },
-        zone_split_percent:Number(screen.zone_split_percent||50), zone_names:{ A:screen.zone_a_name||'Zone A', B:screen.zone_b_name||'Zone B' },
-        zone_crops:{ A:{top:Number(screen.zone_a_crop_top||0),right:Number(screen.zone_a_crop_right||0),bottom:Number(screen.zone_a_crop_bottom||0),left:Number(screen.zone_a_crop_left||0),mode:screen.zone_a_crop_mode||'HIDE'}, B:{top:Number(screen.zone_b_crop_top||0),right:Number(screen.zone_b_crop_right||0),bottom:Number(screen.zone_b_crop_bottom||0),left:Number(screen.zone_b_crop_left||0),mode:screen.zone_b_crop_mode||'HIDE'} },
-        player_ui:{ hover_controls:true, actions:['STOP','ECO','SETTINGS'] },
         sync_version: Number(screen.sync_version || 0) },
       zones: { A: await getZoneItems(screen.playlist_a_id), B: screen.layout !== 'SINGLE' ? await getZoneItems(screen.playlist_b_id) : [] }
     });
@@ -873,11 +710,6 @@ const httpServer = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 httpServer.on('upgrade', (request, socket, head) => {
-  if (REBUILD_SAFE_MODE) {
-    socket.destroy();
-    return;
-  }
-
   let url;
   try { url = new URL(request.url, 'http://localhost'); } catch (_) { socket.destroy(); return; }
   if (url.pathname !== '/ws/player') { socket.destroy(); return; }

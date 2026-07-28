@@ -1,0 +1,242 @@
+let allScreens = [];
+let screenFolders = [];
+let selectedFolderId = null; // null = all, 0 = unclassified
+let selectedScreenIds = new Set();
+let screenSearch = '';
+
+async function loadScreens() {
+  const el = document.getElementById('page-screens');
+  el.innerHTML = '<div class="empty"><div class="empty-icon">⏳</div><p>Chargement des écrans…</p></div>';
+  try {
+    [allScreens, screenFolders] = await Promise.all([GET('/api/screen-explorer'), GET('/api/screen-folders')]);
+    renderScreens();
+  } catch (e) { el.innerHTML = `<div class="empty"><p>${e.message}</p></div>`; }
+}
+
+function esc(value) {
+  const div = document.createElement('div');
+  div.textContent = String(value ?? '');
+  return div.innerHTML;
+}
+
+function foldersByParent() {
+  const map = new Map();
+  for (const folder of screenFolders) {
+    const key = folder.parent_id || 0;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(folder);
+  }
+  for (const items of map.values()) items.sort((a,b) => a.name.localeCompare(b.name, 'fr'));
+  return map;
+}
+
+function folderPath(folderId) {
+  if (!folderId) return [];
+  const found = screenFolders.find(f => Number(f.id) === Number(folderId));
+  if (!found) return [];
+  return [...folderPath(found.parent_id), found];
+}
+
+function buildFolderTree(parentId = 0, level = 0) {
+  const map = foldersByParent();
+  const folders = map.get(parentId) || [];
+  return folders.map(folder => {
+    const active = Number(selectedFolderId) === Number(folder.id);
+    return `<div class="screen-finder-folder ${active ? 'active' : ''}" style="padding-left:${12 + level * 16}px" onclick="openScreenFolder(${folder.id})">
+      <span class="folder-icon">📁</span>
+      <span class="folder-label">${esc(folder.name)}</span>
+      <span class="folder-count">${folder.screen_count || 0}</span>
+    </div>${buildFolderTree(folder.id, level + 1)}`;
+  }).join('');
+}
+
+function filteredScreens() {
+  const term = screenSearch.trim().toLocaleLowerCase('fr');
+  return allScreens.filter(s => {
+    if (selectedFolderId === 0 && s.group_id) return false;
+    if (selectedFolderId && selectedFolderId !== 0 && Number(s.group_id) !== Number(selectedFolderId)) return false;
+    if (!term) return true;
+    return [s.name, s.pairing_code, s.client_name, s.group_name]
+      .filter(Boolean).join(' ').toLocaleLowerCase('fr').includes(term);
+  });
+}
+
+function renderScreens() {
+  const el = document.getElementById('page-screens');
+  const list = filteredScreens();
+  const path = selectedFolderId ? folderPath(selectedFolderId) : [];
+  const breadcrumb = [
+    `<button class="finder-crumb ${selectedFolderId === null ? 'active' : ''}" onclick="openScreenFolder(null)">Tous les écrans</button>`,
+    ...path.map((f, i) => `<span class="finder-sep">›</span><button class="finder-crumb ${i === path.length - 1 ? 'active' : ''}" onclick="openScreenFolder(${f.id})">${esc(f.name)}</button>`)
+  ].join('');
+  const selectedCount = selectedScreenIds.size;
+
+  el.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">🖥️ Écrans</h1>
+        <div class="v32-subtitle">Classez votre parc comme dans Finder : sites, villes, clients et emplacements.</div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-secondary" onclick="openScreenFolderForm()">📁 Nouveau dossier</button>
+        <button class="btn btn-secondary" onclick="openPlayerUpdatePanel()">⬆ Mise à jour Player</button>
+        <button class="btn btn-primary" onclick="openScreenForm()">+ Nouvel écran</button>
+      </div>
+    </div>
+    <div class="screen-finder">
+      <aside class="screen-finder-sidebar">
+        <div class="screen-finder-title">EMPLACEMENTS</div>
+        <div class="screen-finder-folder ${selectedFolderId === null ? 'active' : ''}" onclick="openScreenFolder(null)">
+          <span class="folder-icon">🖥️</span><span class="folder-label">Tous les écrans</span><span class="folder-count">${allScreens.length}</span>
+        </div>
+        <div class="screen-finder-folder ${selectedFolderId === 0 ? 'active' : ''}" onclick="openScreenFolder(0)">
+          <span class="folder-icon">📥</span><span class="folder-label">Non classés</span><span class="folder-count">${allScreens.filter(s => !s.group_id).length}</span>
+        </div>
+        <div class="screen-folder-tree">${buildFolderTree()}</div>
+      </aside>
+      <section class="screen-finder-content">
+        <div class="finder-topbar">
+          <div class="finder-breadcrumb">${breadcrumb}</div>
+          <input id="screen-search" value="${esc(screenSearch)}" placeholder="Rechercher nom, code, client ou emplacement…" oninput="setScreenSearch(this.value)">
+        </div>
+        <div class="finder-actions">
+          <span>${list.length} écran(s)</span>
+          ${selectedCount ? `<strong>${selectedCount} sélectionné(s)</strong>
+          <select id="screen-move-target"><option value="">Déplacer vers…</option><option value="0">Non classés</option>${screenFolders.map(f=>`<option value="${f.id}">${esc(folderPath(f.id).map(x=>x.name).join(' › '))}</option>`).join('')}</select>
+          <button class="btn btn-sm btn-primary" onclick="moveSelectedScreens()">Déplacer</button>` : ''}
+        </div>
+        <div class="screens-grid finder-screen-grid">
+          ${list.length ? list.map(renderScreenCard).join('') : `<div class="empty"><div class="empty-icon">📁</div><p>Aucun écran dans cet emplacement.</p></div>`}
+        </div>
+      </section>
+    </div>`;
+}
+
+function renderScreenCard(s) {
+  const online = s.last_seen_at && (Date.now() - new Date(s.last_seen_at).getTime()) < 5 * 60 * 1000;
+  const selected = selectedScreenIds.has(Number(s.id));
+  return `<article class="screen-card ${selected ? 'selected' : ''}">
+    <div class="screen-card-header">
+      <label class="screen-select"><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleScreenSelection(${s.id},this.checked)"></label>
+      <div><div class="screen-name">${esc(s.name)}</div><div class="screen-detail">${esc(s.client_name || 'Interne')}</div></div>
+      <span class="badge ${online ? 'badge-green' : 'badge-red'}">${online ? 'En ligne' : 'Hors ligne'}</span>
+    </div>
+    <div class="screen-code">${esc(s.pairing_code)}</div>
+    <div class="screen-detail">📁 ${esc(s.group_name || 'Non classé')}</div>
+    <div class="screen-detail">${s.width_px}×${s.height_px}px · ${s.orientation}° · ${esc(s.layout)}</div>
+    <div class="screen-detail">Mode : <strong>${s.display_mode === 'KIOSK' ? 'Plein écran Windows' : 'Fenêtre administrée'}</strong> · Moniteur ${Number(s.monitor_id || 0)}</div>
+    <div class="screen-playlists">
+      <div class="screen-zone"><span class="zone-label">Zone A</span><span class="zone-value">${esc(s.playlist_a_name || '—')}</span></div>
+      ${s.layout !== 'SINGLE' ? `<div class="screen-zone"><span class="zone-label">Zone B</span><span class="zone-value">${esc(s.playlist_b_name || '—')}</span></div>` : ''}
+    </div>
+    <div class="actions" style="margin-top:12px">
+      <button class="btn btn-sm btn-secondary" onclick="openScreenForm(${s.id})">✏️ Modifier</button>
+      <button class="btn btn-sm btn-secondary" onclick="openScreenSchedule(${s.id})">🗓 Programmation</button>
+      <button class="btn btn-sm btn-primary" onclick="syncScreen(${s.id})">📡 Synchroniser</button>
+      <button class="btn btn-sm btn-danger" onclick="deleteScreen(${s.id})">🗑️</button>
+    </div>
+  </article>`;
+}
+
+function openScreenFolder(id) {
+  selectedFolderId = id === null ? null : Number(id);
+  selectedScreenIds.clear();
+  renderScreens();
+}
+function setScreenSearch(value) { screenSearch = value; renderScreens(); }
+function toggleScreenSelection(id, checked) {
+  checked ? selectedScreenIds.add(Number(id)) : selectedScreenIds.delete(Number(id));
+  renderScreens();
+}
+async function moveSelectedScreens() {
+  const select = document.getElementById('screen-move-target');
+  if (!select?.value) return toast('Choisissez un emplacement.', 'error');
+  try {
+    await PUT('/api/screen-explorer/move', { ids: [...selectedScreenIds], group_id: select.value === '0' ? null : Number(select.value) });
+    toast('Écrans déplacés et synchronisés.');
+    [allScreens, screenFolders] = await Promise.all([GET('/api/screen-explorer'), GET('/api/screen-folders')]);
+    selectedScreenIds.clear(); renderScreens();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function openScreenFolderForm(folder) {
+  const parentId = folder?.parent_id ?? (selectedFolderId && selectedFolderId !== 0 ? selectedFolderId : '');
+  openModal(folder ? 'Renommer le dossier d’écrans' : 'Nouveau dossier d’écrans', `
+    <div class="form-group"><label>Nom *</label><input id="sf-name" value="${esc(folder?.name || '')}" placeholder="Ex. Bruxelles › Centre-ville"></div>
+    ${folder ? '' : `<div class="form-group"><label>Dossier parent</label><select id="sf-parent"><option value="">À la racine</option>${screenFolders.filter(f=>!folder || f.id!==folder.id).map(f=>`<option value="${f.id}" ${Number(parentId)===Number(f.id)?'selected':''}>${esc(folderPath(f.id).map(x=>x.name).join(' › '))}</option>`).join('')}</select></div>`}
+    <div class="form-group"><label>Client (facultatif)</label><select id="sf-client"><option value="">Interne / tous clients</option>${(window.allClients||[]).map(c=>`<option value="${c.id}" ${Number(folder?.client_id)===Number(c.id)?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="form-actions">
+      ${folder ? `<button class="btn btn-danger" onclick="deleteScreenFolder(${folder.id})">Supprimer</button>` : ''}
+      <button class="btn btn-secondary" onclick="closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="saveScreenFolder(${folder?.id || 'null'})">Enregistrer</button>
+    </div>`);
+}
+async function saveScreenFolder(id) {
+  const name = document.getElementById('sf-name').value.trim();
+  if (!name) return toast('Le nom est requis.', 'error');
+  try {
+    if (id) await PUT(`/api/screen-folders/${id}`, { name });
+    else await POST('/api/screen-folders', { name, parent_id: document.getElementById('sf-parent').value || null, client_id: document.getElementById('sf-client').value || null });
+    closeModal(); screenFolders = await GET('/api/screen-folders'); renderScreens();
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function deleteScreenFolder(id) {
+  if (!confirm('Supprimer ce dossier ? Les écrans seront déplacés dans Non classés.')) return;
+  try { await DEL(`/api/screen-folders/${id}`); closeModal(); screenFolders = await GET('/api/screen-folders'); selectedFolderId = null; renderScreens(); } catch(e) { toast(e.message, 'error'); }
+}
+
+function toggleZoneB() {
+  const layout = document.getElementById('s-layout').value;
+  document.getElementById('zone-b-group').style.display = layout !== 'SINGLE' ? '' : 'none';
+}
+function openScreenForm(id) {
+  const s = id ? allScreens.find(x => Number(x.id) === Number(id)) : null;
+  const currentFolder = s?.group_id || (selectedFolderId && selectedFolderId !== 0 ? selectedFolderId : '');
+  openModal(s ? 'Modifier l’écran' : 'Nouvel écran', `
+    <div class="form-group"><label>Nom *</label><input id="s-name" value="${esc(s?.name || '')}" placeholder="Ex. Magasin Lyon - Vitrine"></div>
+    <div class="form-row"><div class="form-group"><label>Client</label><select id="s-client"><option value="">Aucun</option>${(window.allClients||[]).map(c=>`<option value="${c.id}" ${Number(s?.client_id)===Number(c.id)?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Emplacement</label><select id="s-folder"><option value="">Non classé</option>${screenFolders.map(f=>`<option value="${f.id}" ${Number(currentFolder)===Number(f.id)?'selected':''}>${esc(folderPath(f.id).map(x=>x.name).join(' › '))}</option>`).join('')}</select></div></div>
+    <div class="form-row"><div class="form-group"><label>Largeur (px)</label><input id="s-w" type="number" value="${s?.width_px || 1920}"></div><div class="form-group"><label>Hauteur (px)</label><input id="s-h" type="number" value="${s?.height_px || 1080}"></div></div>
+    <div class="form-row"><div class="form-group"><label>Orientation</label><select id="s-orient"><option value="0" ${!s||Number(s.orientation)===0?'selected':''}>0° (Normal)</option><option value="90" ${Number(s?.orientation)===90?'selected':''}>90° (Droite)</option><option value="180" ${Number(s?.orientation)===180?'selected':''}>180° (Retourné)</option><option value="270" ${Number(s?.orientation)===270?'selected':''}>270° (Gauche)</option></select></div>
+    <div class="form-group"><label>Disposition</label><select id="s-layout" onchange="toggleZoneB()"><option value="SINGLE" ${!s||s.layout==='SINGLE'?'selected':''}>Zone unique</option><option value="DOUBLE_H" ${s?.layout==='DOUBLE_H'?'selected':''}>Double — Horizontal</option><option value="DOUBLE_V" ${s?.layout==='DOUBLE_V'?'selected':''}>Double — Vertical</option></select></div></div>
+    <div class="form-group"><label>Playlist — Zone A</label><select id="s-pa"><option value="">Aucune</option>${(window.allPlaylists||[]).map(p=>`<option value="${p.id}" ${Number(s?.playlist_a_id)===Number(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+    <div class="form-group" id="zone-b-group" style="${s?.layout&&s.layout!=='SINGLE'?'':'display:none'}"><label>Playlist — Zone B</label><select id="s-pb"><option value="">Aucune</option>${(window.allPlaylists||[]).map(p=>`<option value="${p.id}" ${Number(s?.playlist_b_id)===Number(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+    <div class="form-row"><div class="form-group"><label>Mode Player</label><select id="s-display-mode"><option value="WINDOW" ${s?.display_mode!=='KIOSK'?'selected':''}>Fenêtre administrée</option><option value="KIOSK" ${s?.display_mode==='KIOSK'?'selected':''}>Plein écran Windows</option></select></div><div class="form-group"><label>Moniteur cible</label><select id="s-monitor"><option value="0" ${Number(s?.monitor_id||0)===0?'selected':''}>Moniteur 0</option><option value="1" ${Number(s?.monitor_id)===1?'selected':''}>Moniteur 1</option><option value="2" ${Number(s?.monitor_id)===2?'selected':''}>Moniteur 2</option></select></div></div>
+    <div class="form-group"><label>Couleur de veille</label><input id="s-standby" type="color" value="${s?.standby_color || '#000000'}"></div>
+    <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Annuler</button><button class="btn btn-primary" onclick="saveScreen(${id || 'null'})">Enregistrer</button></div>`);
+}
+async function saveScreen(id) {
+  const name = document.getElementById('s-name').value.trim();
+  if (!name) return toast('Le nom est requis', 'error');
+  const data = { name, client_id:document.getElementById('s-client').value||null, width_px:Number(document.getElementById('s-w').value)||1920, height_px:Number(document.getElementById('s-h').value)||1080, orientation:Number(document.getElementById('s-orient').value)||0, layout:document.getElementById('s-layout').value, playlist_a_id:document.getElementById('s-pa').value||null, playlist_b_id:document.getElementById('s-pb').value||null, standby_color:document.getElementById('s-standby').value, display_mode:document.getElementById('s-display-mode').value, monitor_id:Number(document.getElementById('s-monitor').value)||0 };
+  try {
+    const screen = id ? await PUT(`/api/screens/${id}`, data) : await POST('/api/screens', data);
+    await PUT(`/api/screen-explorer/${screen.id}/folder`, { group_id: document.getElementById('s-folder').value || null });
+    closeModal(); toast('Écran enregistré et classé.');
+    [allScreens, screenFolders] = await Promise.all([GET('/api/screen-explorer'), GET('/api/screen-folders')]); renderScreens();
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function syncScreen(id) { try { await POST(`/api/screens/${id}/sync`); toast('Synchronisation envoyée.'); } catch(e) { toast(e.message,'error'); } }
+async function deleteScreen(id) { if (!confirm('Supprimer cet écran ?')) return; try { await DEL(`/api/screens/${id}`); allScreens=await GET('/api/screen-explorer'); renderScreens(); toast('Écran supprimé'); } catch(e) { toast(e.message,'error'); } }
+
+async function openScreenSchedule(screenId) {
+  const [rules, playlists] = await Promise.all([GET(`/api/v2/screens/${screenId}/rules`), GET('/api/playlists')]);
+  const screen = allScreens.find(s => Number(s.id)===Number(screenId));
+  openModal(`Programmation — ${esc(screen?.name || 'Écran')}`, `
+    <div class="v32-schedule-note">La playlist de la règle remplace temporairement la playlist standard de la zone concernée.</div>
+    <div class="table-wrap"><table><thead><tr><th>Zone</th><th>Playlist</th><th>Période</th><th>Heures</th><th>Jours</th><th></th></tr></thead><tbody>${rules.length ? rules.map(r=>`<tr><td>${r.zone}</td><td>${esc(r.playlist_name)}</td><td>${r.start_date||'—'} → ${r.end_date||'—'}</td><td>${r.time_from||'—'} → ${r.time_to||'—'}</td><td>${esc(r.days||'all')}</td><td><button class="btn btn-sm btn-danger" onclick="deleteScreenRule(${r.id},${screenId})">✕</button></td></tr>`).join('') : '<tr><td colspan="6">Aucune règle : les playlists par défaut sont actives.</td></tr>'}</tbody></table></div>
+    <hr class="v32-rule">
+    <div class="form-row"><div class="form-group"><label>Zone</label><select id="rule-zone"><option value="A">Zone A</option><option value="B">Zone B</option></select></div><div class="form-group"><label>Playlist temporaire</label><select id="rule-playlist">${playlists.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div></div>
+    <div class="form-row"><div class="form-group"><label>Du (optionnel)</label><input id="rule-start" type="date"></div><div class="form-group"><label>Au (optionnel)</label><input id="rule-end" type="date"></div></div>
+    <div class="form-row"><div class="form-group"><label>De</label><input id="rule-from" type="time"></div><div class="form-group"><label>À</label><input id="rule-to" type="time"></div></div>
+    <div class="form-group"><label>Jours (ex. mon,tue,wed ou all)</label><input id="rule-days" value="all"></div>
+    <div class="form-group"><label>Priorité (plus le nombre est élevé, plus la règle est prioritaire)</label><input id="rule-priority" type="number" value="100"></div>
+    <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Fermer</button><button class="btn btn-primary" onclick="createScreenRule(${screenId})">Ajouter la règle</button></div>`);
+}
+async function createScreenRule(screenId) {
+  try {
+    await POST(`/api/v2/screens/${screenId}/rules`, {zone:document.getElementById('rule-zone').value,playlist_id:Number(document.getElementById('rule-playlist').value),start_date:document.getElementById('rule-start').value||null,end_date:document.getElementById('rule-end').value||null,time_from:document.getElementById('rule-from').value||null,time_to:document.getElementById('rule-to').value||null,days:document.getElementById('rule-days').value||'all',priority:Number(document.getElementById('rule-priority').value)||100});
+    toast('Règle ajoutée et synchronisation envoyée.'); openScreenSchedule(screenId);
+  } catch(e) { toast(e.message,'error'); }
+}
+async function deleteScreenRule(ruleId, screenId) { if (!confirm('Supprimer cette règle ?')) return; try { await DEL(`/api/v2/rules/${ruleId}`); toast('Règle supprimée.'); openScreenSchedule(screenId); } catch(e) { toast(e.message,'error'); } }

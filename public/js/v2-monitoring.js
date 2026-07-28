@@ -1,0 +1,62 @@
+(()=>{
+ const state={screens:[],summary:null,filters:{search:'',status:'',client_id:'',group_id:''}};
+ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+ const fmtAge=value=>{if(!value)return 'Jamais';const sec=Math.max(0,Math.floor((Date.now()-new Date(value).getTime())/1000));if(sec<60)return `Il y a ${sec} s`;if(sec<3600)return `Il y a ${Math.floor(sec/60)} min`;if(sec<86400)return `Il y a ${Math.floor(sec/3600)} h`;return `Il y a ${Math.floor(sec/86400)} j`;};
+ const fmtUptime=s=>{s=Number(s||0);if(!s)return '—';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600);return d?`${d} j ${h} h`:`${h} h`;};
+ const metric=(label,value,suffix='%')=>{const n=value==null?null:Math.round(Number(value));return `<div class="mon-metric"><div><span>${label}</span><strong>${n==null?'—':n+suffix}</strong></div><div class="mon-bar"><i style="width:${n==null?0:Math.min(100,n)}%"></i></div></div>`;};
+ const statusLabel={online:'En ligne',delayed:'En retard',offline:'Hors ligne'};
+ function filtersOptions(key){return [...new Map(state.screens.filter(s=>s[key]).map(s=>[String(s[key]),s[key==='client_id'?'client_name':'group_name']])).entries()].map(([id,name])=>`<option value="${esc(id)}" ${String(state.filters[key])===id?'selected':''}>${esc(name)}</option>`).join('');}
+ function render(){const s=state.summary||{};content.innerHTML=`
+  <section class="hero compact mon-hero"><div><span class="eyebrow">État du parc</span><h2>Monitoring des écrans</h2><p>Contrôlez les connexions, les ressources et la diffusion depuis une seule vue.</p></div><button class="ghost-btn" id="mon-refresh">Actualiser</button></section>
+  <section class="stats-grid mon-stats">${stat('Écrans',s.total||0,'Parc visible','▣')}${stat('En ligne',s.online||0,'Contact < 5 min','●')}${stat('En retard',s.delayed||0,'Entre 5 et 30 min','◔')}${stat('Hors ligne',s.offline||0,`${s.alerts||0} alerte(s)`,'!')}</section>
+  <section class="panel mon-toolbar"><input id="mon-search" placeholder="Rechercher un écran, un code, un client…" value="${esc(state.filters.search)}"><select id="mon-status"><option value="">Tous les états</option><option value="online">En ligne</option><option value="delayed">En retard</option><option value="offline">Hors ligne</option></select><select id="mon-client"><option value="">Tous les clients</option>${filtersOptions('client_id')}</select><select id="mon-group"><option value="">Tous les groupes</option>${filtersOptions('group_id')}</select></section>
+  <section id="mon-grid" class="mon-grid">${cards()}</section>`;
+  document.querySelector('#mon-status').value=state.filters.status;
+  document.querySelector('#mon-refresh').onclick=load;
+  let timer;document.querySelector('#mon-search').oninput=e=>{clearTimeout(timer);timer=setTimeout(()=>{state.filters.search=e.target.value;load()},250)};
+  ['status','client','group'].forEach(k=>document.querySelector('#mon-'+k).onchange=e=>{state.filters[k==='client'?'client_id':k==='group'?'group_id':k]=e.target.value;load()});
+  document.querySelectorAll('[data-screen]').forEach(el=>el.onclick=()=>openDetail(el.dataset.screen));
+ }
+ function cards(){if(!state.screens.length)return '<article class="panel empty-state"><div class="empty-icon">◌</div><h3>Aucun écran trouvé</h3><p>Modifiez les filtres ou vérifiez que des écrans existent dans cet espace.</p></article>';return state.screens.map(s=>`<article class="mon-card" data-screen="${s.id}"><div class="mon-card-head"><div><span class="mon-status ${s.status}"><i></i>${statusLabel[s.status]}</span><h3>${esc(s.name)}</h3><p>${esc(s.client_name||'Interne')}${s.group_name?' · '+esc(s.group_name):''}</p></div><span class="mon-code">${esc(s.pairing_code)}</span></div><div class="mon-now"><span>Diffusion actuelle</span><strong>${esc(s.current_playlist_name||s.playlist_a_name||'Aucune playlist')}</strong><small>${esc(s.current_media_name||s.playback_state||'État non remonté')} ${s.current_zone?'· Zone '+esc(s.current_zone):''}</small></div><div class="mon-metrics">${metric('CPU',s.cpu_percent)}${metric('RAM',s.ram_percent)}${metric('Disque',s.disk_percent)}</div><footer><span>Dernier contact <strong>${fmtAge(s.last_seen_at)}</strong></span><span>Player <strong>${esc(s.player_version||'—')}</strong></span></footer></article>`).join('');}
+ async function load(){content.innerHTML='<div class="loading-card">Chargement du monitoring…</div>';try{const q=new URLSearchParams(Object.fromEntries(Object.entries(state.filters).filter(([,v])=>v)));const [summary,screens]=await Promise.all([cxApi.get('/api/v26/monitoring/summary'),cxApi.get('/api/v26/monitoring/screens?'+q)]);state.summary=summary;state.screens=screens;render()}catch(e){showError(e)}}
+
+ function removeModal(id){document.querySelector(id)?.remove()}
+ function bindDismiss(rootSelector,closeSelector){document.querySelectorAll(`${rootSelector} ${closeSelector}`).forEach(b=>b.onclick=()=>removeModal(rootSelector));}
+
+ function openActivityPanel(screen,history){
+  removeModal('#mon-secondary-modal');
+  document.body.insertAdjacentHTML('beforeend',`<div class="modal-backdrop mon-secondary-backdrop" id="mon-secondary-modal"><div class="modal-card mon-secondary-modal"><header class="mon-secondary-head"><div><span class="eyebrow">Supervision</span><h3>Activité récente</h3><p>${esc(screen.name)}</p></div><button class="icon-btn mon-secondary-close" title="Fermer">×</button></header><div class="mon-secondary-body"><section class="mon-history mon-history-expanded">${history?.length?history.map(h=>`<div><span>${esc(h.event)}</span><strong>${esc(h.playlist_name||h.media_name||'Événement player')}</strong><small>${new Date(h.played_at).toLocaleString('fr-BE')}</small></div>`).join(''):'<p class="muted">Aucun événement enregistré.</p>'}</section></div><footer class="mon-secondary-actions"><button class="ghost-btn mon-secondary-close">Retour à l’écran</button></footer></div></div>`);
+  bindDismiss('#mon-secondary-modal','.mon-secondary-close');
+ }
+
+ async function openLogsPanel(id,screen){
+  removeModal('#mon-secondary-modal');
+  document.body.insertAdjacentHTML('beforeend',`<div class="modal-backdrop mon-secondary-backdrop" id="mon-secondary-modal"><div class="modal-card mon-secondary-modal"><header class="mon-secondary-head"><div><span class="eyebrow">Supervision</span><h3>Journal du player</h3><p>${esc(screen.name)}</p></div><button class="icon-btn mon-secondary-close" title="Fermer">×</button></header><div class="mon-secondary-body" id="mon-secondary-content"><div class="loading-card">Chargement du journal…</div></div><footer class="mon-secondary-actions"><a class="ghost-btn" href="/api/v32/monitoring/screens/${id}/logs.csv">Télécharger CSV</a><button class="ghost-btn" id="mon-clear-logs">Vider le journal</button><button class="primary-btn mon-secondary-close">Retour à l’écran</button></footer></div></div>`);
+  bindDismiss('#mon-secondary-modal','.mon-secondary-close');
+  try{
+   const logs=await cxApi.get('/api/v32/monitoring/screens/'+id+'/logs?limit=100');
+   const target=document.querySelector('#mon-secondary-content');
+   if(target)target.innerHTML=`<section class="mon-history mon-tech-logs mon-history-expanded">${logs.length?logs.map(l=>`<div class="mon-log-row mon-log-${String(l.level||'info').toLowerCase()}"><span>${esc(l.level)}</span><strong>${esc(l.category)} · ${esc(l.message)}</strong><small>${new Date(l.occurred_at).toLocaleString('fr-BE')}</small></div>`).join(''):'<p class="muted">Aucun log technique reçu. Installez le player V0.9 pour activer cette vue.</p>'}</section>`;
+  }catch(e){const target=document.querySelector('#mon-secondary-content');if(target)target.innerHTML=`<div class="mon-alert"><strong>Impossible de charger le journal</strong><p>${esc(e.message)}</p></div>`;}
+  const clearLogs=document.querySelector('#mon-clear-logs');
+  if(clearLogs)clearLogs.onclick=async()=>{if(!confirm('Vider tous les logs techniques de cet écran ?'))return;clearLogs.disabled=true;try{await cxApi.del('/api/v32/monitoring/screens/'+id+'/logs');cxUI.toast({type:'success',title:'Logs vidés',message:'Le journal technique a été supprimé.'});removeModal('#mon-secondary-modal');openLogsPanel(id,screen)}catch(e){clearLogs.disabled=false;cxUI.toast({type:'error',title:'Erreur',message:e.message})}};
+ }
+
+ async function openDetail(id){
+  try{
+   const data=await cxApi.get('/api/v26/monitoring/screens/'+id);
+   const s=data.screen;
+   removeModal('#mon-modal');
+   document.body.insertAdjacentHTML('beforeend',`<div class="modal-backdrop" id="mon-modal"><div class="modal-card mon-modal"><header class="panel-head mon-modal-head"><div><span class="mon-status ${s.status}"><i></i>${statusLabel[s.status]}</span><h3>${esc(s.name)}</h3><p>${esc(s.client_name||'Interne')}${s.group_name?' · '+esc(s.group_name):''}</p></div><button class="icon-btn mon-close" title="Fermer">×</button></header><div class="mon-modal-body"><div class="mon-detail-grid"><section><h4>Diffusion</h4><dl><div><dt>Playlist</dt><dd>${esc(s.current_playlist_name||'—')}</dd></div><div><dt>Média</dt><dd>${esc(s.current_media_name||'—')}</dd></div><div><dt>État</dt><dd>${esc(s.playback_state||'Non remonté')}</dd></div><div><dt>Dernière synchro</dt><dd>${fmtAge(s.last_sync_at)}</dd></div></dl></section><section><h4>Système</h4><dl><div><dt>Player</dt><dd>${esc(s.player_version||'—')}</dd></div><div><dt>Windows</dt><dd>${esc(s.os_version||'—')}</dd></div><div><dt>IP</dt><dd>${esc(s.ip_address||'—')}</dd></div><div><dt>Uptime</dt><dd>${fmtUptime(s.uptime_seconds)}</dd></div></dl></section></div><div class="mon-detail-metrics">${metric('CPU',s.cpu_percent)}${metric('RAM',s.ram_percent)}${metric('Disque',s.disk_percent)}</div>${s.last_error?`<div class="mon-alert"><strong>Dernière erreur</strong><p>${esc(s.last_error)}</p></div>`:''}<div class="mon-detail-links"><button class="mon-detail-link" id="mon-show-activity"><span><strong>Activité récente</strong><small>${data.history?.length||0} événement(s) enregistré(s)</small></span><b>Afficher →</b></button><button class="mon-detail-link" id="mon-show-logs"><span><strong>Journal du player</strong><small>Connexions, synchronisations et erreurs techniques</small></span><b>Afficher →</b></button></div></div><footer class="modal-actions mon-modal-actions"><button class="ghost-btn mon-close">Fermer</button><button class="ghost-btn" id="mon-reload">Relancer la diffusion</button><button class="ghost-btn" id="mon-restart">Redémarrer le player</button><button class="primary-btn" id="mon-sync">Synchroniser</button></footer></div></div>`);
+   const close=()=>removeModal('#mon-modal');
+   document.querySelectorAll('#mon-modal .mon-close').forEach(b=>b.onclick=close);
+   document.querySelector('#mon-show-activity').onclick=()=>openActivityPanel(s,data.history||[]);
+   document.querySelector('#mon-show-logs').onclick=()=>openLogsPanel(id,s);
+   const sendCommand=async(type,button,label)=>{button.disabled=true;const old=button.textContent;button.textContent='Envoi…';try{const r=await cxApi.post('/api/v27/screens/'+id+'/command',{type});cxUI.toast({type:'success',title:label,message:r.command?.realtime?'Commande envoyée immédiatement.':'Commande mise en attente.'});close();load()}catch(e){button.disabled=false;button.textContent=old;cxUI.toast({type:'error',title:'Erreur',message:e.message})}};
+   document.querySelector('#mon-reload').onclick=()=>sendCommand('RELOAD_PLAYBACK',document.querySelector('#mon-reload'),'Relance demandée');
+   document.querySelector('#mon-restart').onclick=()=>{if(confirm('Redémarrer complètement le player sur cet écran ?'))sendCommand('RESTART_PLAYER',document.querySelector('#mon-restart'),'Redémarrage demandé')};
+   document.querySelector('#mon-sync').onclick=async()=>{const b=document.querySelector('#mon-sync');b.disabled=true;b.textContent='Envoi…';try{const r=await cxApi.post('/api/v27/screens/'+id+'/sync',{});cxUI.toast({type:'success',title:'Synchronisation demandée',message:r.realtime?'Commande envoyée immédiatement au player.':'La commande sera récupérée à la prochaine connexion.'});close();load()}catch(e){b.disabled=false;b.textContent='Synchroniser';cxUI.toast({type:'error',title:'Erreur',message:e.message})}};
+  }catch(e){cxUI.toast({type:'error',title:'Impossible d’ouvrir l’écran',message:e.message})}
+ }
+ window.renderMonitoringV26=load;
+})();

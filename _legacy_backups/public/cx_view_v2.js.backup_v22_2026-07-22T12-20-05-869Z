@@ -1,0 +1,136 @@
+
+/* CX-View V2.2 visible interface. Loaded after the legacy pages. */
+(function () {
+  const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const dayNames = [['mon','Lun'],['tue','Mar'],['wed','Mer'],['thu','Jeu'],['fri','Ven'],['sat','Sam'],['sun','Dim']];
+
+  async function openSchedule(screenId) {
+    const [rules, playlists] = await Promise.all([GET(`/api/v2/screens/${screenId}/rules`), GET('/api/playlists')]);
+    const rows = rules.map(rule => `<tr>
+      <td>${esc(rule.name || 'Règle')}</td><td>${esc(rule.zone)}</td><td>${esc(rule.playlist_name)}</td>
+      <td>${esc(rule.start_date ? String(rule.start_date).slice(0,10) : '—')} → ${esc(rule.end_date ? String(rule.end_date).slice(0,10) : '—')}</td>
+      <td>${esc(rule.time_from ? String(rule.time_from).slice(0,5) : '—')} → ${esc(rule.time_to ? String(rule.time_to).slice(0,5) : '—')}</td>
+      <td><button class="btn btn-sm btn-danger" data-v22-delete-rule="${rule.id}" data-v22-screen="${screenId}">✕</button></td>
+    </tr>`).join('');
+    openModal('Programmation de playlists', `
+      <p class="v2-note">La règle remplace temporairement la playlist par défaut de la zone concernée. La priorité la plus élevée gagne.</p>
+      <div class="table-wrap" style="margin-top:12px;max-height:180px;overflow:auto"><table><thead><tr><th>Nom</th><th>Zone</th><th>Playlist</th><th>Dates</th><th>Heures</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6">Aucune règle.</td></tr>'}</tbody></table></div>
+      <div style="margin-top:16px;font-weight:700">Nouvelle règle</div>
+      <div class="form-row"><div class="form-group"><label>Nom</label><input id="v22-rule-name" placeholder="Ex. Promotion été"></div><div class="form-group"><label>Priorité</label><input id="v22-rule-priority" type="number" value="100" min="1"></div></div>
+      <div class="form-row"><div class="form-group"><label>Zone</label><select id="v22-zone"><option value="A">Zone A</option><option value="B">Zone B</option></select></div><div class="form-group"><label>Playlist</label><select id="v22-playlist">${playlists.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div></div>
+      <div class="form-row"><div class="form-group"><label>Date de début</label><input id="v22-start" type="date"></div><div class="form-group"><label>Date de fin</label><input id="v22-end" type="date"></div></div>
+      <div class="form-row"><div class="form-group"><label>Heure de début</label><input id="v22-from" type="time"></div><div class="form-group"><label>Heure de fin</label><input id="v22-to" type="time"></div></div>
+      <div class="form-group"><label>Jours</label><div id="v22-days" style="display:flex;gap:8px;flex-wrap:wrap">${dayNames.map(([id,label])=>`<label style="text-transform:none;display:flex;gap:4px;align-items:center"><input type="checkbox" value="${id}" checked> ${label}</label>`).join('')}</div></div>
+      <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Fermer</button><button class="btn btn-primary" id="v22-add-rule">Ajouter la règle</button></div>`);
+    document.getElementById('v22-add-rule').onclick = async () => {
+      const days = [...document.querySelectorAll('#v22-days input:checked')].map(x=>x.value).join(',') || 'all';
+      await POST(`/api/v2/screens/${screenId}/rules`, {
+        name: document.getElementById('v22-rule-name').value.trim() || null,
+        priority: Number(document.getElementById('v22-rule-priority').value) || 100,
+        zone: document.getElementById('v22-zone').value,
+        playlist_id: Number(document.getElementById('v22-playlist').value),
+        start_date: document.getElementById('v22-start').value || null,
+        end_date: document.getElementById('v22-end').value || null,
+        time_from: document.getElementById('v22-from').value || null,
+        time_to: document.getElementById('v22-to').value || null,
+        days
+      });
+      toast('Règle programmée et synchronisée.'); openSchedule(screenId);
+    };
+    document.querySelectorAll('[data-v22-delete-rule]').forEach(button => button.onclick = async () => {
+      await DEL(`/api/v2/rules/${button.dataset.v22DeleteRule}`);
+      toast('Règle supprimée.'); openSchedule(screenId);
+    });
+  }
+
+  function openCrop(screenId) {
+    const s = allScreens.find(x => Number(x.id) === Number(screenId));
+    openModal('Zone utile / recadrage', `
+      <p class="v2-note">Masque les pixels défectueux sans modifier les dimensions administrées. Le Player V7 applique ce réglage à la diffusion.</p>
+      <div class="form-row"><div class="form-group"><label>Haut (px)</label><input id="v22-ct" type="number" min="0" value="${Number(s.crop_top||0)}"></div><div class="form-group"><label>Bas (px)</label><input id="v22-cb" type="number" min="0" value="${Number(s.crop_bottom||0)}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Gauche (px)</label><input id="v22-cl" type="number" min="0" value="${Number(s.crop_left||0)}"></div><div class="form-group"><label>Droite (px)</label><input id="v22-cr" type="number" min="0" value="${Number(s.crop_right||0)}"></div></div>
+      <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Annuler</button><button class="btn btn-primary" id="v22-save-crop">Enregistrer</button></div>`);
+    document.getElementById('v22-save-crop').onclick = async () => {
+      await PUT(`/api/v2/screens/${screenId}/crop`, {
+        crop_top: Number(document.getElementById('v22-ct').value)||0,
+        crop_bottom: Number(document.getElementById('v22-cb').value)||0,
+        crop_left: Number(document.getElementById('v22-cl').value)||0,
+        crop_right: Number(document.getElementById('v22-cr').value)||0
+      });
+      closeModal(); await loadScreens(); toast('Recadrage enregistré et synchronisé.');
+    };
+  }
+
+  async function openFolderManager() {
+    const folders = await GET('/api/v2/folders/tree');
+    const byParent = new Map();
+    folders.forEach(f => { const k = f.parent_id || 0; if (!byParent.has(k)) byParent.set(k,[]); byParent.get(k).push(f); });
+    const lines = (parent, depth) => (byParent.get(parent)||[]).map(f =>
+      `<div style="padding:5px 0 5px ${depth*18}px">📁 <strong>${esc(f.name)}</strong> <span class="v2-note">${esc(f.client_name||'Interne')} · ${f.media_count||0} média(s)</span></div>` + lines(f.id, depth+1)
+    ).join('');
+    openModal('Dossiers de la médiathèque', `
+      <div style="max-height:230px;overflow:auto;border:1px solid var(--border);padding:8px;border-radius:6px">${lines(0,0) || '<span class="v2-note">Aucun dossier.</span>'}</div>
+      <div style="margin-top:16px;font-weight:700">Créer un dossier ou sous-dossier</div>
+      <div class="form-group"><label>Nom</label><input id="v22-folder-name" placeholder="Ex. Campagne été"></div>
+      <div class="form-row"><div class="form-group"><label>Dossier parent</label><select id="v22-folder-parent"><option value="">Racine</option>${folders.map(f=>`<option value="${f.id}">${'— '.repeat((f.path||'').split('/').length-1)}${esc(f.name)}</option>`).join('')}</select></div>
+      <div class="form-group"><label>Client</label><select id="v22-folder-client"><option value="">Interne (non partagé)</option>${(window.allClients||[]).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div></div>
+      <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Fermer</button><button class="btn btn-primary" id="v22-create-folder">Créer</button></div>`);
+    document.getElementById('v22-create-folder').onclick = async () => {
+      await POST('/api/v2/folders', { name:document.getElementById('v22-folder-name').value.trim(), parent_id:document.getElementById('v22-folder-parent').value||null, client_id:document.getElementById('v22-folder-client').value||null });
+      toast('Dossier créé.'); if (window.loadMedia) await loadMedia(); openFolderManager();
+    };
+  }
+
+  function enhanceScreens() {
+    const page=document.getElementById('page-screens');
+    if(!page || page.dataset.v22Ready==='1') return;
+    page.dataset.v22Ready='1';
+    const header=page.querySelector('.page-header');
+    if(header) {
+      const tools=document.createElement('div');
+      tools.className='v2-toolbar';
+      tools.innerHTML=`<input id="v22-screen-search" placeholder="Rechercher un écran…" style="padding:8px;min-width:190px"><button class="btn btn-secondary" id="v22-groups">📂 Groupes</button>`;
+      header.after(tools);
+      document.getElementById('v22-screen-search').oninput=e=>{
+        const q=e.target.value.toLowerCase();
+        page.querySelectorAll('.screen-card').forEach(card=>card.style.display=card.textContent.toLowerCase().includes(q)?'':'none');
+      };
+      document.getElementById('v22-groups').onclick=async()=>{
+        const groups=await GET('/api/v2/groups');
+        openModal('Groupes d’écrans', `<div class="v2-note">${groups.length?groups.map(g=>`📂 ${esc(g.name)} · ${g.screen_count} écran(s)`).join('<br>'):'Aucun groupe pour le moment.'}</div>
+          <div class="form-group" style="margin-top:16px"><label>Nouveau groupe</label><input id="v22-group-name" placeholder="Ex. Magasins Bruxelles"></div>
+          <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Fermer</button><button class="btn btn-primary" id="v22-create-group">Créer</button></div>`);
+        document.getElementById('v22-create-group').onclick=async()=>{await POST('/api/v2/groups',{name:document.getElementById('v22-group-name').value.trim()});toast('Groupe créé.');closeModal();};
+      };
+    }
+    page.querySelectorAll('.screen-card').forEach((card,index)=>{
+      const s=allScreens[index]; if(!s) return;
+      const actions=document.createElement('div'); actions.className='actions'; actions.style.marginTop='8px';
+      actions.innerHTML=`<button class="btn btn-sm btn-secondary">🗓 Programmation</button><button class="btn btn-sm btn-secondary">✂ Zone utile</button>`;
+      actions.children[0].onclick=()=>openSchedule(s.id);
+      actions.children[1].onclick=()=>openCrop(s.id);
+      card.append(actions);
+    });
+  }
+  function enhanceMedia() {
+    const page=document.getElementById('page-media');
+    if(!page || page.dataset.v22Ready==='1') return;
+    page.dataset.v22Ready='1';
+    const header=page.querySelector('.page-header');
+    if(header) {
+      const button=document.createElement('button');
+      button.className='btn btn-secondary'; button.textContent='🌳 Gérer les dossiers';
+      button.onclick=openFolderManager;
+      header.querySelector('div')?.prepend(button);
+    }
+  }
+  function wrap(name, enhance) {
+    const original=window[name];
+    if(typeof original!=='function' || original.__v22) return;
+    const wrapped=function(){ const out=original.apply(this,arguments); setTimeout(enhance,0); return out; };
+    wrapped.__v22=true; window[name]=wrapped;
+  }
+  wrap('renderScreens',enhanceScreens);
+  wrap('renderMedia',enhanceMedia);
+  window.addEventListener('load',()=>{ enhanceScreens(); enhanceMedia(); });
+})();

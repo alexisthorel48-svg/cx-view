@@ -109,4 +109,7 @@ function togglePickerItem(id) {
 function confirmPicker() {
   if (pickerCallback) pickerCallback([...pickerSelected]);
   closePicker();
+
+// CX View V2.5 scheduler fallback
+document.addEventListener('click',e=>{const a=e.target.closest('[data-page="scheduler"]');if(a)setTimeout(()=>window.renderSchedulerV25&&window.renderSchedulerV25(),0)});
 }

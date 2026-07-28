@@ -1,15 +1,17 @@
-# Secrets et configuration locale
+# Dépendances
+node_modules/
+
+# Builds et caches
+dist/
+build/
+.next/
+coverage/
+.cache/
+
+# Environnement et secrets
 .env
 .env.*
 !.env.example
-*.pem
-*.key
-*.crt
-*.p12
-*.pfx
-
-# Dépendances
-node_modules/
 
 # Logs
 logs/
@@ -17,50 +19,27 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 
-# Build et cache
-dist/
-build/
-.next/
-.cache/
-coverage/
-tmp/
-temp/
-
-# Process manager
-.pm2/
-*.pid
-*.pid.lock
-
-# Fichiers médias et données générées
+# Données générées
 uploads/
-media/
-storage/
-captures/
-screenshots/
-thumbnails/
-processed/
 cache/
+tmp/
 
-# Sauvegardes locales
-*.bak
-*.backup
-*.old
-*.orig
-*backup_*
-server.js.backup*
-server.js.bak*
+# Sauvegardes
+_v2_backups/
+backups/
+*_backup_*/
+*.tar
+*.tar.gz
+*.zip
 
-# Base de données locale
+# Bases locales
 *.sqlite
 *.sqlite3
 *.db
-*.dump
-*.sql.gz
 
-# Système et éditeurs
-.DS_Store
-Thumbs.db
+# Éditeurs et système
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db

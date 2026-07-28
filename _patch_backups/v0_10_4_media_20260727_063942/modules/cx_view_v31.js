@@ -30,31 +30,13 @@ function ruleMatches(rule, now = new Date()) {
 module.exports = {
   register({ app, q, auth, adminOnly, notifyPlayer, notifyScreens, MEDIA_ROOT }) {
     const uploadRoot = path.join(MEDIA_ROOT, 'uploads');
-    const thumbRoot = path.join(MEDIA_ROOT, 'thumbs');
     fs.mkdirSync(uploadRoot, { recursive: true });
-    fs.mkdirSync(thumbRoot, { recursive: true });
 
     const storage = multer.diskStorage({
       destination: (_req, _file, cb) => cb(null, uploadRoot),
       filename: (_req, file, cb) => cb(null, crypto.randomUUID() + path.extname(file.originalname).toLowerCase())
     });
     const upload = multer({ storage, limits: { fileSize: 500 * 1024 * 1024, files: 300 } });
-
-    async function ensureVideoThumbnail(media) {
-      if (!media || media.media_type !== 'VIDEO' || media.thumbnail_name || !media.file_name) return media;
-      const source = path.join(uploadRoot, media.file_name);
-      if (!fs.existsSync(source)) return media;
-      const thumbnailName = crypto.randomUUID() + '.jpg';
-      try {
-        const ffmpeg = require('fluent-ffmpeg');
-        await new Promise((resolve, reject) => ffmpeg(source).screenshots({ count: 1, timemarks: ['10%'], folder: thumbRoot, filename: thumbnailName, size: '480x270' }).on('end', resolve).on('error', reject));
-        await q('UPDATE cx_media SET thumbnail_name=$1 WHERE id=$2', [thumbnailName, media.id]);
-        media.thumbnail_name = thumbnailName;
-      } catch (_) {
-        try { fs.unlinkSync(path.join(thumbRoot, thumbnailName)); } catch {}
-      }
-      return media;
-    }
 
     async function folderRow(id) {
       const result = await q('SELECT * FROM cx_folders WHERE id=$1', [id]);
@@ -97,13 +79,10 @@ module.exports = {
     app.get('/api/v31/folders', auth, async (req, res) => {
       try {
         const clientId = roleClient(req);
-        const base = `SELECT f.*,c.name client_name,
-          (SELECT COUNT(*)::int FROM cx_media m WHERE m.folder_id=f.id AND m.status!='PENDING_DELETE') media_count,
-          (SELECT COUNT(*)::int FROM cx_folders child WHERE child.parent_id=f.id) child_count
-          FROM cx_folders f LEFT JOIN cx_clients c ON c.id=f.client_id`;
         const query = clientId
-          ? await q(base + ' WHERE f.client_id=$1 ORDER BY f.path NULLS FIRST,f.name', [clientId])
-          : await q(base + ' ORDER BY f.path NULLS FIRST,f.name');
+          ? await q('SELECT * FROM cx_folders WHERE client_id=$1 ORDER BY path NULLS FIRST,name', [clientId])
+          : await q(`SELECT f.*,c.name client_name FROM cx_folders f
+                     LEFT JOIN cx_clients c ON c.id=f.client_id ORDER BY f.path NULLS FIRST,f.name`);
         res.json(query.rows);
       } catch (error) { res.status(500).json({ error: error.message }); }
     });
@@ -133,22 +112,13 @@ module.exports = {
 
     app.delete('/api/v31/folders/:id', adminOnly, async (req, res) => {
       try {
-        const folder = await folderRow(req.params.id);
-        if (!folder) return res.status(404).json({ error: 'Dossier introuvable.' });
-        const media = await q(`WITH RECURSIVE tree AS (
+        const count = await q(`WITH RECURSIVE tree AS (
           SELECT id FROM cx_folders WHERE id=$1
           UNION ALL SELECT f.id FROM cx_folders f JOIN tree t ON f.parent_id=t.id
-        ) SELECT id,file_name,thumbnail_name FROM cx_media WHERE folder_id IN (SELECT id FROM tree)`, [req.params.id]);
-        if (media.rows.length && req.query.recursive !== '1') {
-          return res.status(409).json({ error: 'Ce dossier contient des médias.' });
-        }
-        for (const item of media.rows) {
-          try { if (item.file_name) fs.unlinkSync(path.join(MEDIA_ROOT, 'uploads', item.file_name)); } catch {}
-          try { if (item.thumbnail_name) fs.unlinkSync(path.join(MEDIA_ROOT, 'thumbs', item.thumbnail_name)); } catch {}
-        }
-        if (media.rows.length) await q('DELETE FROM cx_media WHERE id=ANY($1::int[])', [media.rows.map(x => x.id)]);
+        ) SELECT COUNT(*)::int count FROM cx_media WHERE folder_id IN (SELECT id FROM tree)`, [req.params.id]);
+        if (Number(count.rows[0].count) > 0) return res.status(409).json({ error: 'Déplacez ou supprimez les médias avant de supprimer ce dossier.' });
         await q('DELETE FROM cx_folders WHERE id=$1', [req.params.id]);
-        res.json({ ok: true, deleted_media: media.rows.length });
+        res.json({ ok: true });
       } catch (error) { res.status(500).json({ error: error.message }); }
     });
 
@@ -176,10 +146,7 @@ module.exports = {
         }
         if (req.query.search) { params.push('%' + req.query.search + '%'); sql += ` AND m.title ILIKE $${params.length}`; }
         sql += ' ORDER BY m.created_at DESC';
-        const rows = (await q(sql, params)).rows;
-        const missingVideos = rows.filter(item => item.media_type === 'VIDEO' && !item.thumbnail_name).slice(0, 12);
-        for (const item of missingVideos) await ensureVideoThumbnail(item);
-        res.json(rows);
+        res.json((await q(sql, params)).rows);
       } catch (error) { res.status(500).json({ error: error.message }); }
     });
 
@@ -197,53 +164,16 @@ module.exports = {
             const folders = rel.slice(0, -1);
             for (const part of folders) target = await ensureFolder(target, rootFolder.client_id, part);
             const type = file.mimetype && file.mimetype.startsWith('video/') ? 'VIDEO' : 'IMAGE';
-            let thumbnailName = null;
-            try {
-              thumbnailName = crypto.randomUUID() + '.jpg';
-              if (type === 'IMAGE') {
-                const sharp = require('sharp');
-                await sharp(file.path).resize(480, 270, { fit: 'cover' }).jpeg({ quality: 82 }).toFile(path.join(thumbRoot, thumbnailName));
-              } else {
-                const ffmpeg = require('fluent-ffmpeg');
-                await new Promise((resolve, reject) => ffmpeg(file.path).screenshots({ count: 1, timemarks: ['10%'], folder: thumbRoot, filename: thumbnailName, size: '480x270' }).on('end', resolve).on('error', reject));
-              }
-            } catch (_) { thumbnailName = null; }
             const result = await q(
-              `INSERT INTO cx_media(client_id,folder_id,title,file_name,original_name,mime_type,media_type,bytes,thumbnail_name)
-               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+              `INSERT INTO cx_media(client_id,folder_id,title,file_name,original_name,mime_type,media_type,bytes)
+               VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
               [rootFolder.client_id, target, path.parse(file.originalname).name, file.filename,
-               file.originalname, file.mimetype, type, file.size, thumbnailName]
+               file.originalname, file.mimetype, type, file.size]
             );
             imported.push(result.rows[0]);
           } catch (error) { failed.push({ name: file.originalname, error: error.message }); }
         }
         res.status(201).json({ ok: true, imported, failed });
-      } catch (error) { res.status(500).json({ error: error.message }); }
-    });
-
-    app.get('/api/v31/media/unused', auth, async (_req, res) => {
-      try {
-        const result = await q(`SELECT m.*,c.name client_name,f.name folder_name
-          FROM cx_media m LEFT JOIN cx_clients c ON c.id=m.client_id LEFT JOIN cx_folders f ON f.id=m.folder_id
-          WHERE NOT EXISTS (SELECT 1 FROM cx_playlist_items pi WHERE pi.media_id=m.id)
-          ORDER BY m.created_at DESC`);
-        res.json(result.rows);
-      } catch (error) { res.status(500).json({ error: error.message }); }
-    });
-
-    app.post('/api/v31/media/delete', adminOnly, async (req, res) => {
-      try {
-        const ids = (req.body.media_ids || []).map(Number).filter(Boolean);
-        if (!ids.length) return res.status(400).json({ error: 'Aucun média sélectionné.' });
-        const used = await q('SELECT DISTINCT media_id FROM cx_playlist_items WHERE media_id=ANY($1::int[])', [ids]);
-        if (used.rows.length) return res.status(409).json({ error: 'Certains médias sont encore utilisés dans une playlist.', used_media_ids: used.rows.map(x=>x.media_id) });
-        const result = await q('SELECT id,file_name,thumbnail_name FROM cx_media WHERE id=ANY($1::int[])', [ids]);
-        for (const item of result.rows) {
-          try { if (item.file_name) fs.unlinkSync(path.join(MEDIA_ROOT, 'uploads', item.file_name)); } catch {}
-          try { if (item.thumbnail_name) fs.unlinkSync(path.join(MEDIA_ROOT, 'thumbs', item.thumbnail_name)); } catch {}
-        }
-        await q('DELETE FROM cx_media WHERE id=ANY($1::int[])', [result.rows.map(x => x.id)]);
-        res.json({ ok: true, count: result.rows.length });
       } catch (error) { res.status(500).json({ error: error.message }); }
     });
 
