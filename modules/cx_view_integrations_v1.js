@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const { qrDataUri } = require('./qr_svg');
 
 const PROVIDERS = Object.freeze({
   weather: { status: 'ACTIVE', category: 'DATA', label: 'Météo', player_data_route: '/api/player/:code/v2/widget-data?type=WEATHER' },
@@ -47,13 +48,14 @@ function register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_BA
       const screenId = Number(req.body.screen_id);
       const screen = (await q('SELECT id,name,pairing_code FROM cx_screens WHERE id=$1',[screenId])).rows[0];
       if (!screen) return res.status(404).json({error:'Écran introuvable'});
-      const token = crypto.randomBytes(24).toString('hex');
+      const token = crypto.randomUUID();
       const minutes = Math.max(1, Math.min(1440, Number(req.body.minutes || 15)));
       const duration = Math.max(5, Math.min(600, Number(req.body.duration_seconds || 30)));
       await q(`INSERT INTO cx_qr_sessions(token,screen_id,expires_at,duration_seconds,max_uses)
                VALUES($1,$2,NOW()+($3::text || ' minutes')::interval,$4,$5)`,[token,screen.id,minutes,duration,Math.max(1,Math.min(500,Number(req.body.max_uses||20)))]);
       const origin = PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
-      res.json({ok:true,token,screen:{id:screen.id,name:screen.name},url:`${origin}/qr-to-screen/${token}`,expires_in_minutes:minutes,duration_seconds:duration,max_uses:Math.max(1,Math.min(500,Number(req.body.max_uses||20)))});
+      const url = `${origin}/qr-to-screen/${token}`;
+      res.json({ok:true,token,screen:{id:screen.id,name:screen.name},url,qr_svg:qrDataUri(url,{margin:2}),expires_in_minutes:minutes,duration_seconds:duration,max_uses:Math.max(1,Math.min(500,Number(req.body.max_uses||20)))});
     } catch (error) { res.status(500).json({error:error.message}); }
   });
 

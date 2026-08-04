@@ -78,13 +78,13 @@ async function openConfig(id){
 async function openQrToScreen(id,name){
  try{
   const r=await cxApi.post('/api/v2/integrations/qr_to_screen/session',{screen_id:id,minutes:15,duration_seconds:30,max_uses:20});
-  const qrImage='https://api.qrserver.com/v1/create-qr-code/?size=420x420&margin=12&data='+encodeURIComponent(r.url);
+  const qrImage=r.qr_svg;
   const html=`<div class="modal-backdrop" id="qr-screen-modal"><div class="modal-card qr-screen-card"><div class="panel-head"><div><span class="eyebrow">QR to Screen</span><h3>${esc(name||r.screen?.name||'Écran')}</h3></div><button type="button" class="icon-btn" id="qr-screen-close">×</button></div><div style="display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:24px;align-items:center"><div style="background:#fff;padding:12px;border-radius:18px;display:grid;place-items:center"><img src="${esc(qrImage)}" alt="QR Code pour envoyer un média sur l’écran" style="display:block;width:100%;height:auto;aspect-ratio:1"></div><div><p><strong>Scanne ce QR Code</strong> avec un téléphone pour envoyer immédiatement une image ou une vidéo sur cet écran.</p><label>Durée d’affichage<input id="qr-screen-duration" type="number" min="5" max="600" value="${Number(r.duration_seconds||30)}" readonly></label><label>Lien public<input id="qr-screen-url" value="${esc(r.url)}" readonly></label><p class="muted">Lien valable ${Number(r.expires_in_minutes||15)} minutes · ${Number(r.max_uses||20)} envois maximum · images et vidéos jusqu’à 100 Mo.</p></div></div><div class="modal-actions"><button type="button" class="ghost-btn" id="qr-screen-copy">Copier le lien</button><button type="button" class="ghost-btn" id="qr-screen-download">Télécharger le QR</button><button type="button" class="primary-btn" id="qr-screen-open">Tester la page</button></div></div></div>`;
   document.body.insertAdjacentHTML('beforeend',html);
   const close=()=>document.querySelector('#qr-screen-modal')?.remove();
   document.querySelector('#qr-screen-close').onclick=close;
   document.querySelector('#qr-screen-copy').onclick=async()=>{try{await navigator.clipboard.writeText(r.url);cxUI.toast({type:'success',title:'Lien copié',message:'Le lien QR to Screen est dans le presse-papiers.'});}catch(_){window.prompt('Copie ce lien :',r.url)}};
-  document.querySelector('#qr-screen-download').onclick=()=>{const a=document.createElement('a');a.href=qrImage;a.download='qr-to-screen-'+String(name||id).replace(/[^a-z0-9_-]+/gi,'-')+'.png';a.target='_blank';a.rel='noopener';a.click()};
+  document.querySelector('#qr-screen-download').onclick=()=>{const a=document.createElement('a');a.href=qrImage;a.download='qr-to-screen-'+String(name||id).replace(/[^a-z0-9_-]+/gi,'-')+'.svg';a.target='_blank';a.rel='noopener';a.click()};
   document.querySelector('#qr-screen-open').onclick=()=>window.open(r.url,'_blank','noopener');
  }catch(e){cxUI.toast({type:'error',title:'QR to Screen indisponible',message:e.message});}
 }
