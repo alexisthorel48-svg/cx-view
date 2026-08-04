@@ -59,6 +59,34 @@ function register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_BA
     } catch (error) { res.status(500).json({error:error.message}); }
   });
 
+  app.post('/api/v2/integrations/qr_to_screen/screens/:id/display', adminOnly, async (req, res) => {
+    res.set('Cache-Control','no-store');
+    try {
+      const screen = (await q('SELECT id,pairing_code FROM cx_screens WHERE id=$1',[Number(req.params.id)])).rows[0];
+      if (!screen) return res.status(404).json({error:'Écran introuvable'});
+      const qrSvg = String(req.body.qr_svg || '');
+      if (!qrSvg.startsWith('data:image/svg+xml')) return res.status(400).json({error:'QR invalide'});
+      const displaySeconds = Math.max(10, Math.min(86400, Number(req.body.display_seconds || 900)));
+      const payload = { qr_svg: qrSvg, url: req.body.url || '', caption: String(req.body.caption || 'Scannez pour envoyer une photo ou une vidéo').slice(0,200), display_seconds: displaySeconds };
+      const cmd = (await q(`INSERT INTO cx_player_commands(screen_id,type,payload,status,source_type,source_id)
+        VALUES($1,'SHOW_QR',$2::jsonb,'PENDING','QR_SESSION',NULL) RETURNING id`,[screen.id,JSON.stringify(payload)])).rows[0];
+      const realtime = notifyPlayer(screen.pairing_code,{type:'command',commandId:cmd.id,command:'SHOW_QR',payload});
+      res.json({ok:true,realtime});
+    } catch (error) { res.status(500).json({error:error.message}); }
+  });
+
+  app.post('/api/v2/integrations/qr_to_screen/screens/:id/hide', adminOnly, async (req, res) => {
+    res.set('Cache-Control','no-store');
+    try {
+      const screen = (await q('SELECT id,pairing_code FROM cx_screens WHERE id=$1',[Number(req.params.id)])).rows[0];
+      if (!screen) return res.status(404).json({error:'Écran introuvable'});
+      const cmd = (await q(`INSERT INTO cx_player_commands(screen_id,type,payload,status,source_type,source_id)
+        VALUES($1,'HIDE_QR','{}'::jsonb,'PENDING','QR_SESSION',NULL) RETURNING id`,[screen.id])).rows[0];
+      const realtime = notifyPlayer(screen.pairing_code,{type:'command',commandId:cmd.id,command:'HIDE_QR'});
+      res.json({ok:true,realtime});
+    } catch (error) { res.status(500).json({error:error.message}); }
+  });
+
   app.get('/qr-to-screen/:token', async (req,res)=>{
     res.set('Cache-Control','no-store');
     const session=(await q(`SELECT qs.*,s.name screen_name FROM cx_qr_sessions qs JOIN cx_screens s ON s.id=qs.screen_id WHERE qs.token=$1`,[req.params.token])).rows[0];
