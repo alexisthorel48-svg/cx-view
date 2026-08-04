@@ -33,6 +33,7 @@ const cxViewV33 = require('./modules/cx_view_v33');
 const cxViewV34 = require('./modules/cx_view_v34');
 const cxViewV35 = require('./modules/cx_view_v35');
 const cxViewIntegrationsV1 = require('./modules/cx_view_integrations_v1');
+const cxViewIntegrationsInboundV1 = require('./modules/cx_view_integrations_inbound_v1');
 
 // CXVIEW_REALTIME_V64
 const playerSockets = new Map();
@@ -769,6 +770,7 @@ cxViewV33.register({ app, q, auth });
 cxViewV34.register({ app, q, superOnly, MEDIA_ROOT, PUBLIC_BASE_URL, notifyPlayer });
 cxViewV35.register({ app, q, PUBLIC_BASE_URL });
 cxViewIntegrationsV1.register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_BASE_URL });
+cxViewIntegrationsInboundV1.register({ app, q, adminOnly });
 
 // ─── API PLAYER ───────────────────────────────────────────────────────────────
 app.get('/api/player/:code', async (req, res) => {
