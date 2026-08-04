@@ -1,7 +1,6 @@
 'use strict';
 
 const crypto = require('crypto');
-const { interleavePriorityItems } = require('./priority_engine');
 
 const PROTOCOL_VERSION = 2;
 const ENGINE_VERSION = '0.18.1';
@@ -121,14 +120,7 @@ function register({ app, q, PUBLIC_BASE_URL }) {
         }
       };
     });
-    const sequencedItems = interleavePriorityItems(items, it => ({
-      isPriority: !!it.priority.enabled,
-      intervalMinutes: it.priority.interval_minutes,
-      count: it.priority.count,
-      durationSeconds: it.duration_seconds,
-      playForever: !!it.play_forever
-    }));
-    const payload = { id: playlist.id, name: playlist.name, updated_at: playlist.updated_at, items: sequencedItems };
+    const payload = { id: playlist.id, name: playlist.name, updated_at: playlist.updated_at, items };
     return { ...payload, hash: sha256(payload) };
   }
 

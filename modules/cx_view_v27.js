@@ -2,7 +2,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { interleavePriorityItems } = require('./priority_engine');
 
 function sha256File(filePath){return new Promise((resolve,reject)=>{const h=crypto.createHash('sha256');const s=fs.createReadStream(filePath);s.on('data',d=>h.update(d));s.on('end',()=>resolve(h.digest('hex')));s.on('error',reject);});}
 function tokenHash(token){return crypto.createHash('sha256').update(String(token)).digest('hex');}
@@ -22,8 +21,7 @@ function register({app,q,auth,adminOnly,notifyPlayer,MEDIA_ROOT,PUBLIC_BASE_URL}
       if(!p)continue;
       const items=(await q(`SELECT i.*,m.title media_title,m.file_name,m.original_name,m.mime_type,m.media_type,m.bytes,m.updated_at media_updated_at
         FROM cx_playlist_items i LEFT JOIN cx_media m ON m.id=i.media_id WHERE i.playlist_id=$1 AND i.active=true ORDER BY i.position,i.id`,[id])).rows;
-      const mappedItems=items.map(it=>({...it,media_url:it.file_name?`${PUBLIC_BASE_URL||req.protocol+'://'+req.get('host')}/files/uploads/${encodeURIComponent(it.file_name)}`:null}));
-      playlists[id]={...p,items:interleavePriorityItems(mappedItems,it=>({isPriority:!!it.is_priority,intervalMinutes:Number(it.priority_interval_minutes)||0,count:Number(it.priority_count)||0,durationSeconds:Number(it.duration_seconds)||10,playForever:!!it.play_forever}))};
+      playlists[id]={...p,items:items.map(it=>({...it,media_url:it.file_name?`${PUBLIC_BASE_URL||req.protocol+'://'+req.get('host')}/files/uploads/${encodeURIComponent(it.file_name)}`:null}))};
     }
     const rules=(await q('SELECT * FROM cx_screen_schedule_rules WHERE screen_id=$1 AND active=true ORDER BY zone,priority DESC,id',[screen.id])).rows;
     return {protocol:'cx-player-v1',screen:{id:screen.id,name:screen.name,pairing_code:screen.pairing_code,width_px:screen.width_px,height_px:screen.height_px,orientation:screen.orientation,layout:screen.layout,monitor_id:screen.monitor_id||0,window_x:screen.window_x||0,window_y:screen.window_y||0,standby_color:screen.standby_color,zone_split_percent:screen.zone_split_percent||50,zone_a_name:screen.zone_a_name||'Zone A',zone_b_name:screen.zone_b_name||'Zone B',zone_a_crop_top:screen.zone_a_crop_top||0,zone_a_crop_right:screen.zone_a_crop_right||0,zone_a_crop_bottom:screen.zone_a_crop_bottom||0,zone_a_crop_left:screen.zone_a_crop_left||0,zone_a_crop_mode:screen.zone_a_crop_mode||'HIDE',zone_b_crop_top:screen.zone_b_crop_top||0,zone_b_crop_right:screen.zone_b_crop_right||0,zone_b_crop_bottom:screen.zone_b_crop_bottom||0,zone_b_crop_left:screen.zone_b_crop_left||0,zone_b_crop_mode:screen.zone_b_crop_mode||'HIDE',playlist_a_id:screen.playlist_a_id,playlist_b_id:screen.playlist_b_id,sync_version:Number(screen.sync_version||0),config_version:Number(screen.config_version||1)},playlists,rules,generated_at:new Date().toISOString()};
