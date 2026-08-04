@@ -1,5 +1,6 @@
 (function(){
-  const state={folders:[],media:[],current:null,selected:new Set(),view:'grid',search:'',sort:'recent'};
+  const state={folders:[],media:[],clients:[],me:null,current:null,selected:new Set(),view:'grid',search:'',sort:'recent'};
+  const isSuper=()=>state.me?.role==='SUPER_ADMIN';
   const esc=s=>window.cxUI?.escape?cxUI.escape(s):String(s??'');
   const bytes=n=>{n=Number(n||0);if(!n)return '0 o';const u=['o','Ko','Mo','Go'];const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),3);return `${(n/1024**i).toFixed(i?1:0)} ${u[i]}`};
   const date=v=>v?new Intl.DateTimeFormat('fr-BE',{dateStyle:'medium',timeStyle:'short'}).format(new Date(v)):'—';
@@ -19,7 +20,9 @@
   async function load(){
     document.getElementById('content').innerHTML=cxUI.loading('Chargement de la médiathèque…');
     try{
+      state.me=await cxApi.get('/api/auth/me');
       [state.folders,state.media]=await Promise.all([cxApi.get('/api/v31/folders'),cxApi.get('/api/v31/media')]);
+      state.clients=isSuper()?await cxApi.get('/api/clients'):[];
       state.current=null;state.selected.clear();render();
     }catch(e){document.getElementById('content').innerHTML=`<div class="error-state"><h3>Médiathèque indisponible</h3><p>${esc(e.message)}</p><button class="primary-btn" onclick="renderMediaFinder()">Réessayer</button></div>`}
   }
@@ -46,13 +49,13 @@
   function details(){
     const items=selectedMedia();
     if(!items.length)return `<div class="mf-details-empty"><div>◎</div><h3>Aucune sélection</h3><p>Sélectionnez un média pour afficher ses informations.</p></div>`;
-    if(items.length>1)return `<div class="mf-details-empty mf-multi"><div>${items.length}</div><h3>Médias sélectionnés</h3><p>Déplacez ou supprimez toute la sélection en une seule action.</p><button class="cx-btn cx-btn-ghost" id="mf-move-selected">Déplacer</button><button class="cx-btn cx-btn-danger" id="mf-delete-selected-side">Supprimer la sélection</button></div>`;
+    if(items.length>1)return `<div class="mf-details-empty mf-multi"><div>${items.length}</div><h3>Médias sélectionnés</h3><p>Déplacez, attribuez ou supprimez toute la sélection en une seule action.</p><button class="cx-btn cx-btn-ghost" id="mf-move-selected">Déplacer</button>${isSuper()?'<button class="cx-btn cx-btn-ghost" id="mf-assign-selected-side">Attribuer à un client</button>':''}<button class="cx-btn cx-btn-danger" id="mf-delete-selected-side">Supprimer la sélection</button></div>`;
     const m=items[0];
-    return `<div class="mf-preview">${m.media_type==='VIDEO'?`<video controls preload="metadata" poster="${thumbUrl(m)}" src="${mediaUrl(m)}"></video>`:`<img src="${mediaUrl(m)}" alt="">`}</div><div class="mf-details-title"><div><h3>${esc(m.title||m.original_name)}</h3><span>${esc(m.media_type||'MÉDIA')}</span></div><button class="mf-more" data-media-menu="${m.id}">•••</button></div><dl class="mf-meta"><div><dt>Nom du fichier</dt><dd>${esc(m.original_name||m.file_name)}</dd></div><div><dt>Poids</dt><dd>${bytes(m.bytes)}</dd></div><div><dt>Type</dt><dd>${esc(m.mime_type||m.media_type)}</dd></div><div><dt>Dossier</dt><dd>${esc(m.folder_path||m.folder_name||'Racine')}</dd></div><div><dt>Client</dt><dd>${esc(m.client_name||'Non attribué')}</dd></div><div><dt>Ajouté</dt><dd>${date(m.created_at)}</dd></div></dl><div class="mf-detail-actions"><button class="cx-btn cx-btn-ghost" data-rename-media="${m.id}">Renommer</button><button class="cx-btn cx-btn-danger" data-delete-media="${m.id}">Supprimer</button></div>`;
+    return `<div class="mf-preview">${m.media_type==='VIDEO'?`<video controls preload="metadata" poster="${thumbUrl(m)}" src="${mediaUrl(m)}"></video>`:`<img src="${mediaUrl(m)}" alt="">`}</div><div class="mf-details-title"><div><h3>${esc(m.title||m.original_name)}</h3><span>${esc(m.media_type||'MÉDIA')}</span></div><button class="mf-more" data-media-menu="${m.id}">•••</button></div><dl class="mf-meta"><div><dt>Nom du fichier</dt><dd>${esc(m.original_name||m.file_name)}</dd></div><div><dt>Poids</dt><dd>${bytes(m.bytes)}</dd></div><div><dt>Type</dt><dd>${esc(m.mime_type||m.media_type)}</dd></div><div><dt>Dossier</dt><dd>${esc(m.folder_path||m.folder_name||'Racine')}</dd></div><div><dt>Client</dt><dd>${esc(m.client_name||'Non attribué')}</dd></div><div><dt>Ajouté</dt><dd>${date(m.created_at)}</dd></div></dl><div class="mf-detail-actions"><button class="cx-btn cx-btn-ghost" data-rename-media="${m.id}">Renommer</button>${isSuper()?`<button class="cx-btn cx-btn-ghost" data-assign-media="${m.id}">Attribuer</button>`:''}<button class="cx-btn cx-btn-danger" data-delete-media="${m.id}">Supprimer</button></div>`;
   }
   function selectionBar(){
     const count=state.selected.size;if(!count)return '';
-    return `<div class="mf-selection-bar"><strong>${count} média${count>1?'s':''} sélectionné${count>1?'s':''}</strong><div>${count===1?'<button class="cx-btn cx-btn-ghost" id="mf-rename-selected">Renommer</button>':''}<button class="cx-btn cx-btn-ghost" id="mf-move-selected-top">Déplacer</button><button class="cx-btn cx-btn-danger" id="mf-delete-selected">Supprimer</button><button class="icon-btn" id="mf-clear-selection" title="Annuler la sélection">×</button></div></div>`;
+    return `<div class="mf-selection-bar"><strong>${count} média${count>1?'s':''} sélectionné${count>1?'s':''}</strong><div>${count===1?'<button class="cx-btn cx-btn-ghost" id="mf-rename-selected">Renommer</button>':''}<button class="cx-btn cx-btn-ghost" id="mf-move-selected-top">Déplacer</button>${isSuper()?'<button class="cx-btn cx-btn-ghost" id="mf-assign-selected">Attribuer à un client</button>':''}<button class="cx-btn cx-btn-danger" id="mf-delete-selected">Supprimer</button><button class="icon-btn" id="mf-clear-selection" title="Annuler la sélection">×</button></div></div>`;
   }
 
   function render(){
@@ -87,10 +90,13 @@
     document.querySelectorAll('[data-media-menu]').forEach(b=>b.onclick=e=>{e.stopPropagation();mediaMenu(Number(b.dataset.mediaMenu))});
     document.querySelectorAll('[data-rename-media]').forEach(b=>b.onclick=()=>renameMedia(Number(b.dataset.renameMedia)));
     document.querySelectorAll('[data-delete-media]').forEach(b=>b.onclick=()=>deleteMedia([Number(b.dataset.deleteMedia)]));
+    document.querySelectorAll('[data-assign-media]').forEach(b=>b.onclick=()=>assignMedia([Number(b.dataset.assignMedia)]));
     document.getElementById('mf-move-selected')?.addEventListener('click',()=>moveMedia([...state.selected]));
     document.getElementById('mf-move-selected-top')?.addEventListener('click',()=>moveMedia([...state.selected]));
     document.getElementById('mf-delete-selected-side')?.addEventListener('click',()=>deleteMedia([...state.selected]));
+    document.getElementById('mf-assign-selected-side')?.addEventListener('click',()=>assignMedia([...state.selected]));
     document.getElementById('mf-delete-selected')?.addEventListener('click',()=>deleteMedia([...state.selected]));
+    document.getElementById('mf-assign-selected')?.addEventListener('click',()=>assignMedia([...state.selected]));
     document.getElementById('mf-rename-selected')?.addEventListener('click',()=>renameMedia([...state.selected][0]));
     document.getElementById('mf-clear-selection')?.addEventListener('click',()=>{state.selected.clear();render()});
   }
@@ -106,7 +112,7 @@
     try{const result=await cxApi.upload('/api/v31/media/upload',fd);toast.remove();await refresh(`${result.imported?.length||files.length} fichier(s) importé(s)`)}catch(e){toast.remove();cxUI.toast({type:'danger',title:'Import impossible',message:e.message})}
   }
   function folderMenu(id){const f=state.folders.find(x=>Number(x.id)===id);cxUI.modal({title:f.name,body:`<div class="mf-action-list"><button data-open>Ouvrir</button><button data-rename>Renommer</button><button class="danger" data-delete>Supprimer le dossier complet</button></div>`,onMount:(el,close)=>{el.querySelector('[data-open]').onclick=()=>{close();state.current=id;render()};el.querySelector('[data-rename]').onclick=()=>{close();renameFolder(id)};el.querySelector('[data-delete]').onclick=()=>{close();deleteFolder(id)}}})}
-  function mediaMenu(id){const m=state.media.find(x=>Number(x.id)===id);cxUI.modal({title:m.title||m.original_name,body:`<div class="mf-action-list"><button data-preview>Afficher les informations</button><button data-rename>Renommer</button><button data-move>Déplacer</button><button class="danger" data-delete>Supprimer</button></div>`,onMount:(el,close)=>{el.querySelector('[data-preview]').onclick=()=>{close();state.selected=new Set([id]);render()};el.querySelector('[data-rename]').onclick=()=>{close();renameMedia(id)};el.querySelector('[data-move]').onclick=()=>{close();moveMedia([id])};el.querySelector('[data-delete]').onclick=()=>{close();deleteMedia([id])}}})}
+  function mediaMenu(id){const m=state.media.find(x=>Number(x.id)===id);cxUI.modal({title:m.title||m.original_name,body:`<div class="mf-action-list"><button data-preview>Afficher les informations</button><button data-rename>Renommer</button><button data-move>Déplacer</button>${isSuper()?'<button data-assign>Attribuer à un client</button>':''}<button class="danger" data-delete>Supprimer</button></div>`,onMount:(el,close)=>{el.querySelector('[data-preview]').onclick=()=>{close();state.selected=new Set([id]);render()};el.querySelector('[data-rename]').onclick=()=>{close();renameMedia(id)};el.querySelector('[data-move]').onclick=()=>{close();moveMedia([id])};el.querySelector('[data-assign]')?.addEventListener('click',()=>{close();assignMedia([id])});el.querySelector('[data-delete]').onclick=()=>{close();deleteMedia([id])}}})}
   function renameFolder(id){const f=state.folders.find(x=>Number(x.id)===id);cxUI.modal({title:'Renommer le dossier',body:`<label class="cx-field"><span>Nouveau nom</span><input id="mf-rename" class="cx-input" value="${esc(f.name)}"></label>`,footer:`<button class="cx-btn cx-btn-ghost" data-cancel>Annuler</button><button class="cx-btn cx-btn-primary" data-save>Enregistrer</button>`,onMount:(el,close)=>{el.querySelector('[data-cancel]').onclick=close;el.querySelector('[data-save]').onclick=async()=>{const name=el.querySelector('#mf-rename').value.trim();if(!name)return;try{await cxApi.put(`/api/v31/folders/${id}`,{name});close();await refresh('Dossier renommé')}catch(e){cxUI.toast({type:'danger',title:'Erreur',message:e.message})}}}})}
   async function deleteFolder(id){
     const f=state.folders.find(x=>Number(x.id)===id);if(!f)return;
@@ -114,7 +120,15 @@
     try{await cxApi.delete(`/api/v31/folders/${id}?recursive=1`);if(Number(state.current)===id)state.current=f.parent_id?Number(f.parent_id):null;state.selected.clear();await refresh('Dossier supprimé')}
     catch(e){cxUI.toast({type:'danger',title:'Suppression impossible',message:e.message})}
   }
-  function renameMedia(id){const m=state.media.find(x=>Number(x.id)===id);cxUI.modal({title:'Renommer le média',body:`<label class="cx-field"><span>Nouveau nom</span><input id="mf-rename" class="cx-input" value="${esc(m.title||'')}"></label>`,footer:`<button class="cx-btn cx-btn-ghost" data-cancel>Annuler</button><button class="cx-btn cx-btn-primary" data-save>Enregistrer</button>`,onMount:(el,close)=>{el.querySelector('[data-cancel]').onclick=close;el.querySelector('[data-save]').onclick=async()=>{const title=el.querySelector('#mf-rename').value.trim();if(!title)return;try{await cxApi.put(`/api/media/${id}`,{title,folder_id:m.folder_id,client_id:m.client_id,keep_forever:m.keep_forever,delete_after:m.delete_after});close();await refresh('Média renommé')}catch(e){cxUI.toast({type:'danger',title:'Erreur',message:e.message})}}}})}
+  function renameMedia(id){const m=state.media.find(x=>Number(x.id)===id);cxUI.modal({title:'Renommer le média',body:`<label class="cx-field"><span>Nouveau nom</span><input id="mf-rename" class="cx-input" value="${esc(m.title||'')}"></label>`,footer:`<button class="cx-btn cx-btn-ghost" data-cancel>Annuler</button><button class="cx-btn cx-btn-primary" data-save>Enregistrer</button>`,onMount:(el,close)=>{el.querySelector('[data-cancel]').onclick=close;el.querySelector('[data-save]').onclick=async()=>{const title=el.querySelector('#mf-rename').value.trim();if(!title)return;try{await cxApi.put(`/api/v31/media/${id}`,{title});close();await refresh('Média renommé')}catch(e){cxUI.toast({type:'danger',title:'Erreur',message:e.message})}}}})}
+
+  function assignMedia(ids){
+    if(!isSuper()||!ids.length)return;
+    const current=state.media.find(m=>Number(m.id)===Number(ids[0]))?.client_id;
+    const options=['<option value="">Bibliothèque globale / non attribué</option>',...state.clients.filter(c=>c.active!==false).map(c=>`<option value="${c.id}" ${Number(current)===Number(c.id)?'selected':''}>${esc(c.name)}</option>`)].join('');
+    cxUI.modal({title:ids.length>1?`Attribuer ${ids.length} médias`:'Attribuer le média',body:`<label class="cx-field"><span>Client propriétaire</span><select id="mf-client-target" class="cx-select">${options}</select></label><p style="margin-top:12px;color:var(--muted,#6b7280)">Le média sera déplacé dans le dossier « Médias » du client. Seuls les utilisateurs de ce client pourront ensuite le voir et le gérer.</p>`,footer:`<button class="cx-btn cx-btn-ghost" data-cancel>Annuler</button><button class="cx-btn cx-btn-primary" data-save>Attribuer</button>`,onMount:(el,close)=>{el.querySelector('[data-cancel]').onclick=close;el.querySelector('[data-save]').onclick=async()=>{const raw=el.querySelector('#mf-client-target').value;try{await cxApi.post('/api/v31/media/assign',{media_ids:ids,client_id:raw===''?null:Number(raw)});close();state.selected.clear();await refresh(ids.length>1?'Médias attribués':'Média attribué')}catch(e){cxUI.toast({type:'danger',title:'Attribution impossible',message:e.message})}}}});
+  }
+
   async function deleteMedia(ids){
     if(!ids.length)return;
     if(!await cxUI.confirm({title:`Supprimer ${ids.length>1?'ces médias':'ce média'} ?`,message:`${ids.length} fichier${ids.length>1?'s seront':' sera'} supprimé${ids.length>1?'s':''} définitivement du serveur.`,confirmText:'Supprimer',danger:true}))return;

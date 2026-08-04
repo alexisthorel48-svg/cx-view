@@ -16,6 +16,10 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
   const safeColor = v => /^#[0-9a-f]{6}$/i.test(String(v || '')) ? String(v) : '#6D5DFB';
   const safePriority = v => Math.max(0, Math.min(9999, Math.round(Number(v) || 100)));
   const safeTimezone = v => /^[A-Za-z_]+\/[A-Za-z0-9_+\-]+(?:\/[A-Za-z0-9_+\-]+)?$/.test(String(v||'')) ? String(v) : 'Europe/Brussels';
+  const role = req => String(req.session?.userRole || '').toUpperCase();
+  const isSuper = req => ['SUPER_ADMIN','SUPER'].includes(role(req));
+  const tenantId = req => Number(req.session?.clientId) || null;
+  const deny = res => res.status(403).json({error:'Accès refusé'});
   const safeTargetType = v => ['SCREEN','GROUP','MULTI','ALL'].includes(String(v||'').toUpperCase()) ? String(v).toUpperCase() : 'SCREEN';
 
   async function touchScreens(screenIds) {
@@ -26,15 +30,15 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
     for(const row of r.rows) notifyPlayer(row.pairing_code,{type:'sync',screenId:row.id});
   }
 
-  async function resolveTargets(body) {
+  async function resolveTargets(req, body) {
     const type=safeTargetType(body.target_type);
     let ids=[];
     if(type==='ALL') {
-      ids=(await q('SELECT id FROM cx_screens ORDER BY id')).rows.map(x=>x.id);
+      ids=(await q(isSuper(req)?'SELECT id FROM cx_screens ORDER BY id':'SELECT id FROM cx_screens WHERE client_id=$1 ORDER BY id',isSuper(req)?[]:[tenantId(req)])).rows.map(x=>x.id);
     } else if(type==='GROUP') {
       const gid=cleanId(body.group_id);
       if(!gid) throw new Error('Groupe requis.');
-      ids=(await q('SELECT id FROM cx_screens WHERE group_id=$1 ORDER BY id',[gid])).rows.map(x=>x.id);
+      ids=(await q(isSuper(req)?'SELECT id FROM cx_screens WHERE group_id=$1 ORDER BY id':'SELECT id FROM cx_screens WHERE group_id=$1 AND client_id=$2 ORDER BY id',isSuper(req)?[gid]:[gid,tenantId(req)])).rows.map(x=>x.id);
     } else if(type==='MULTI') {
       ids=(Array.isArray(body.screen_ids)?body.screen_ids:[]).map(cleanId).filter(Boolean);
     } else {
@@ -42,6 +46,7 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
       if(id) ids=[id];
     }
     ids=[...new Set(ids)];
+    if(!isSuper(req) && ids.length){ const allowed=(await q('SELECT id FROM cx_screens WHERE id=ANY($1::int[]) AND client_id=$2',[ids,tenantId(req)])).rows.map(x=>x.id); if(allowed.length!==ids.length) throw new Error('Un ou plusieurs écrans sont hors de votre espace client.'); ids=allowed; }
     if(!ids.length) throw new Error('Sélectionnez au moins un écran.');
     return {type,ids};
   }
@@ -75,22 +80,20 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
     };
   }
 
-  app.get('/api/v25/scheduler/meta', auth, async (_req, res) => {
+  app.get('/api/v25/scheduler/meta', auth, async (req, res) => {
     try {
+      const cid=tenantId(req), scoped=!isSuper(req);
+      if(scoped && !cid) return deny(res);
       const [screens, playlists, groups] = await Promise.all([
         q(`SELECT s.id,s.name,s.layout,s.group_id,c.name client_name,g.name group_name
-           FROM cx_screens s
-           LEFT JOIN cx_clients c ON c.id=s.client_id
-           LEFT JOIN cx_screen_groups g ON g.id=s.group_id
-           ORDER BY c.name NULLS FIRST,g.name NULLS FIRST,s.name`),
+           FROM cx_screens s LEFT JOIN cx_clients c ON c.id=s.client_id LEFT JOIN cx_screen_groups g ON g.id=s.group_id
+           ${scoped?'WHERE s.client_id=$1':''} ORDER BY c.name NULLS FIRST,g.name NULLS FIRST,s.name`,scoped?[cid]:[]),
         q(`SELECT p.id,p.name,p.workspace_id,c.name client_name,COUNT(pi.id)::int item_count
-           FROM cx_playlists p
-           LEFT JOIN cx_clients c ON c.id=p.client_id
-           LEFT JOIN cx_playlist_items pi ON pi.playlist_id=p.id
-           GROUP BY p.id,c.name ORDER BY p.name`),
+           FROM cx_playlists p LEFT JOIN cx_clients c ON c.id=p.client_id LEFT JOIN cx_playlist_items pi ON pi.playlist_id=p.id
+           ${scoped?'WHERE p.client_id=$1':''} GROUP BY p.id,c.name ORDER BY p.name`,scoped?[cid]:[]),
         q(`SELECT g.id,g.name,COUNT(s.id)::int screen_count
            FROM cx_screen_groups g LEFT JOIN cx_screens s ON s.group_id=g.id
-           GROUP BY g.id ORDER BY g.name`)
+           ${scoped?'WHERE g.client_id=$1':''} GROUP BY g.id ORDER BY g.name`,scoped?[cid]:[])
       ]);
       res.json({ screens:screens.rows, playlists:playlists.rows, groups:groups.rows });
     } catch (e) { console.error('[V0.14 scheduler meta]', e); res.status(500).json({ error:e.message }); }
@@ -106,6 +109,7 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
                LEFT JOIN cx_clients c ON c.id=s.client_id
                LEFT JOIN cx_screen_groups g ON g.id=s.group_id
                WHERE 1=1`;
+      if(!isSuper(req)){if(!tenantId(req))return deny(res);params.push(tenantId(req));sql+=` AND s.client_id=$${params.length}`;}
       if(req.query.from){params.push(req.query.from);sql+=` AND (r.end_date IS NULL OR r.end_date >= $${params.length}::date)`;}
       if(req.query.to){params.push(req.query.to);sql+=` AND (r.start_date IS NULL OR r.start_date <= $${params.length}::date)`;}
       if(req.query.screen_id){params.push(Number(req.query.screen_id));sql+=` AND r.screen_id=$${params.length}`;}
@@ -121,7 +125,7 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
   app.post('/api/v25/scheduler/conflicts', auth, async (req,res)=>{
     try {
       const body=req.body;
-      const target=await resolveTargets(body);
+      const target=await resolveTargets(req, body);
       const params=[target.ids,safeZone(body.zone),safeDate(body.start_date),safeDate(body.end_date),safeTime(body.time_from),safeTime(body.time_to),safeDays(body.days),safeText(body.exclude_uid)||null];
       const rows=(await q(`SELECT r.*,s.name screen_name,p.name playlist_name
         FROM cx_screen_schedule_rules r
@@ -143,8 +147,9 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
   app.post('/api/v25/scheduler/campaigns', adminOnly, async (req,res)=>{
     const client=await pool.connect();
     try {
-      const b=req.body,target=await resolveTargets(b),playlistId=cleanId(b.playlist_id);
+      const b=req.body,target=await resolveTargets(req, b),playlistId=cleanId(b.playlist_id);
       if(!playlistId) throw new Error('Playlist requise.');
+      if(!isSuper(req)){const own=await q('SELECT id FROM cx_playlists WHERE id=$1 AND client_id=$2',[playlistId,tenantId(req)]);if(!own.rows[0])throw new Error('Playlist inaccessible.');}
       const uid=crypto.randomUUID();
       const groupId=target.type==='GROUP'?cleanId(b.group_id):null;
       const label=safeText(b.target_label || (target.type==='ALL'?'Tous les écrans':''));
@@ -167,14 +172,15 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
   app.put('/api/v25/scheduler/campaigns/:uid', adminOnly, async (req,res)=>{
     const client=await pool.connect();
     try {
-      const b=req.body,target=await resolveTargets(b),playlistId=cleanId(b.playlist_id),uid=req.params.uid;
+      const b=req.body,target=await resolveTargets(req, b),playlistId=cleanId(b.playlist_id),uid=req.params.uid;
       if(!playlistId) throw new Error('Playlist requise.');
-      const old=(await client.query(`SELECT screen_id FROM cx_screen_schedule_rules WHERE COALESCE(campaign_uid::text,'legacy-'||id::text)=$1`,[uid])).rows.map(r=>r.screen_id);
+      if(!isSuper(req)){const own=await q('SELECT id FROM cx_playlists WHERE id=$1 AND client_id=$2',[playlistId,tenantId(req)]);if(!own.rows[0])throw new Error('Playlist inaccessible.');}
+      const old=(await client.query(`SELECT r.screen_id FROM cx_screen_schedule_rules r JOIN cx_screens s ON s.id=r.screen_id WHERE COALESCE(r.campaign_uid::text,'legacy-'||r.id::text)=$1${isSuper(req)?'':' AND s.client_id=$2'}`,isSuper(req)?[uid]:[uid,tenantId(req)])).rows.map(r=>r.screen_id);
       if(!old.length) throw new Error('Campagne introuvable.');
       const groupId=target.type==='GROUP'?cleanId(b.group_id):null;
       const label=safeText(b.target_label || (target.type==='ALL'?'Tous les écrans':''));
       await client.query('BEGIN');
-      await client.query(`DELETE FROM cx_screen_schedule_rules WHERE COALESCE(campaign_uid::text,'legacy-'||id::text)=$1`,[uid]);
+      await client.query(`DELETE FROM cx_screen_schedule_rules r USING cx_screens s WHERE r.screen_id=s.id AND COALESCE(r.campaign_uid::text,'legacy-'||r.id::text)=$1${isSuper(req)?'':' AND s.client_id=$2'}`,isSuper(req)?[uid]:[uid,tenantId(req)]);
       const realUid=uid.startsWith('legacy-')?crypto.randomUUID():uid;
       for(const screenId of target.ids){
         await client.query(`INSERT INTO cx_screen_schedule_rules
@@ -193,7 +199,7 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
 
   app.delete('/api/v25/scheduler/campaigns/:uid', adminOnly, async (req,res)=>{
     try{
-      const r=await q(`DELETE FROM cx_screen_schedule_rules WHERE COALESCE(campaign_uid::text,'legacy-'||id::text)=$1 RETURNING screen_id`,[req.params.uid]);
+      const r=await q(`DELETE FROM cx_screen_schedule_rules r USING cx_screens s WHERE r.screen_id=s.id AND COALESCE(r.campaign_uid::text,'legacy-'||r.id::text)=$1${isSuper(req)?'':' AND s.client_id=$2'} RETURNING r.screen_id`,isSuper(req)?[req.params.uid]:[req.params.uid,tenantId(req)]);
       if(!r.rowCount) return res.status(404).json({error:'Campagne introuvable.'});
       await touchScreens(r.rows.map(x=>x.screen_id));
       res.json({ok:true,screen_count:r.rowCount});
@@ -202,7 +208,7 @@ function register({ app, q, pool, auth, adminOnly, notifyPlayer }) {
 
   app.post('/api/v25/scheduler/campaigns/:uid/duplicate', adminOnly, async (req,res)=>{
     try{
-      const rows=(await q(`SELECT * FROM cx_screen_schedule_rules WHERE COALESCE(campaign_uid::text,'legacy-'||id::text)=$1 ORDER BY id`,[req.params.uid])).rows;
+      const rows=(await q(`SELECT r.* FROM cx_screen_schedule_rules r JOIN cx_screens s ON s.id=r.screen_id WHERE COALESCE(r.campaign_uid::text,'legacy-'||r.id::text)=$1${isSuper(req)?'':' AND s.client_id=$2'} ORDER BY r.id`,isSuper(req)?[req.params.uid]:[req.params.uid,tenantId(req)])).rows;
       if(!rows.length) return res.status(404).json({error:'Campagne introuvable.'});
       const uid=crypto.randomUUID();
       for(const r of rows){await q(`INSERT INTO cx_screen_schedule_rules

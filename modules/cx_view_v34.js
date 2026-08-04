@@ -34,7 +34,36 @@ function register({app,q,superOnly,MEDIA_ROOT,PUBLIC_BASE_URL,notifyPlayer}){
    const r=(await q(`INSERT INTO cx_player_releases(version,channel,status,file_name,original_name,mime_type,bytes,sha256,release_notes,mandatory,created_by)
      VALUES($1,$2,'DRAFT',$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[version,channel(req.body.channel),stored,req.file.originalname,req.file.mimetype,req.file.size,sha,clean(req.body.release_notes)||null,String(req.body.mandatory)==='true',req.session.userId])).rows[0]; res.status(201).json(r);
  }catch(e){res.status(400).json({error:e.message})}finally{if(temp)fs.rmSync(temp,{force:true})}});
- app.post('/api/v34/releases/:id/publish',superOnly,async(req,res)=>{try{const r=(await q(`UPDATE cx_player_releases SET status='PUBLISHED',published_at=COALESCE(published_at,NOW()) WHERE id=$1 RETURNING *`,[req.params.id])).rows[0];if(!r)return res.status(404).json({error:'Version introuvable'});res.json(r)}catch(e){res.status(500).json({error:e.message})}});
+ 
+ app.get('/api/v34/releases/:id/download',superOnly,async(req,res)=>{try{
+ const r=(await q('SELECT * FROM cx_player_releases WHERE id=$1',[req.params.id])).rows[0];
+ if(!r)return res.sendStatus(404);
+ const f=path.join(root,r.file_name);
+ if(!fs.existsSync(f))return res.sendStatus(404);
+ res.download(f,r.original_name||r.file_name);
+ }catch(e){res.status(500).json({error:e.message})}});
+ app.get('/api/player/latest',superOnly,async(req,res)=>{try{
+ const r=(await q(`SELECT id,version,channel,bytes,sha256,published_at,original_name,file_name FROM cx_player_releases WHERE status='PUBLISHED' ORDER BY CASE WHEN channel='STABLE' THEN 0 ELSE 1 END,published_at DESC,created_at DESC LIMIT 1`)).rows[0];
+ if(!r)return res.status(404).json({error:'Aucune version Player publiée'});
+ res.json({...r,download:'/api/player/latest/download'});
+}catch(e){res.status(500).json({error:e.message})}});
+app.get('/api/player/latest/download',superOnly,async(req,res)=>{try{
+ const r=(await q(`SELECT * FROM cx_player_releases WHERE status='PUBLISHED' ORDER BY CASE WHEN channel='STABLE' THEN 0 ELSE 1 END,published_at DESC,created_at DESC LIMIT 1`)).rows[0];
+ if(!r)return res.status(404).json({error:'Aucune version Player publiée'});
+ const f=path.join(root,path.basename(r.file_name));if(!fs.existsSync(f))return res.status(404).json({error:'Package introuvable'});
+ res.setHeader('X-CX-Player-Version',r.version);res.setHeader('X-CX-SHA256',r.sha256);res.download(f,r.original_name||r.file_name);
+}catch(e){res.status(500).json({error:e.message})}});
+ app.delete('/api/v34/releases/:id',superOnly,async(req,res)=>{try{
+ const r=(await q('SELECT * FROM cx_player_releases WHERE id=$1',[req.params.id])).rows[0];
+ if(!r)return res.sendStatus(404);
+ if(r.status!=='ARCHIVED')return res.status(400).json({error:'Archive requise'});
+ await q('DELETE FROM cx_player_deployment_targets WHERE deployment_id IN (SELECT id FROM cx_player_deployments WHERE release_id=$1)',[r.id]);
+ await q('DELETE FROM cx_player_deployments WHERE release_id=$1',[r.id]);
+ await q('DELETE FROM cx_player_releases WHERE id=$1',[r.id]);
+ try{fs.rmSync(path.join(root,r.file_name),{force:true})}catch{}
+ res.json({ok:true});
+ }catch(e){res.status(500).json({error:e.message})}});
+app.post('/api/v34/releases/:id/publish',superOnly,async(req,res)=>{try{const r=(await q(`UPDATE cx_player_releases SET status='PUBLISHED',published_at=COALESCE(published_at,NOW()) WHERE id=$1 RETURNING *`,[req.params.id])).rows[0];if(!r)return res.status(404).json({error:'Version introuvable'});res.json(r)}catch(e){res.status(500).json({error:e.message})}});
  app.post('/api/v34/releases/:id/archive',superOnly,async(req,res)=>{try{res.json((await q(`UPDATE cx_player_releases SET status='ARCHIVED',archived_at=NOW() WHERE id=$1 RETURNING *`,[req.params.id])).rows[0]||{})}catch(e){res.status(500).json({error:e.message})}});
  app.get('/api/player/:code/update-package/:id',async(req,res)=>{try{const code=String(req.params.code||'').trim().toUpperCase();const screen=(await q('SELECT id,player_token_hash FROM cx_screens WHERE pairing_code=$1',[code])).rows[0];if(!screen||!screen.player_token_hash||tokenHash(bearer(req))!==screen.player_token_hash)return res.status(401).json({error:'Jeton player invalide'});const r=await release(req.params.id);if(!r||r.status!=='PUBLISHED')return res.status(404).end();const fp=path.join(root,path.basename(r.file_name));if(!fs.existsSync(fp))return res.status(404).end();res.setHeader('Content-Disposition',`attachment; filename="${String(r.original_name||r.file_name).replace(/"/g,'')}"`);res.setHeader('X-CX-Player-Version',r.version);res.setHeader('X-CX-SHA256',r.sha256);res.sendFile(fp)}catch(e){res.status(500).json({error:e.message})}});
  app.get('/api/v34/targets',superOnly,async(req,res)=>{try{const [screens,groups]=await Promise.all([q(`SELECT id,name,player_version,update_channel,update_status,update_progress,update_target_version,last_seen_at FROM cx_screens ORDER BY name`),q(`SELECT id,name FROM cx_screen_groups ORDER BY name`)]);res.json({screens:screens.rows,groups:groups.rows})}catch(e){res.status(500).json({error:e.message})}});

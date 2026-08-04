@@ -1,0 +1,4 @@
+Patch Admin 1.0.2
+- Route dernier Player
+- Rognage transmis au Player
+- Redémarrage PC distant

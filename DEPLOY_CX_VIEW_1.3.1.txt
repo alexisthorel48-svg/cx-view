@@ -1,0 +1,24 @@
+CX VIEW SERVER 1.3.1 — SPLIT SCREEN + QR TO SCREEN
+
+MODIFICATIONS PRINCIPALES
+- Migration PostgreSQL automatique dédiée aux dispositions SINGLE / VERTICAL / HORIZONTAL.
+- Conversion des anciennes valeurs DOUBLE_H / DOUBLE_V.
+- Sauvegarde du split écran corrigée et diagnostic API amélioré.
+- Incrément de config_version à chaque modification écran.
+- QR to Screen activé : session publique temporaire, upload image/vidéo, commande vers le Player.
+- Bouton "QR vers cet écran" ajouté dans l'onglet Écrans.
+
+INSTALLATION VPS
+1. Copier l'archive dans /home/ubuntu/
+2. Extraire par-dessus /home/ubuntu/cx_view_rebuild
+3. Installer les dépendances
+4. Exécuter la migration
+5. Redémarrer PM2
+
+COMMANDES
+cd /home/ubuntu/cx_view_rebuild
+npm install --omit=dev
+npm run migrate:1.3.1
+pm2 restart cx-view
+pm2 status
+pm2 logs cx-view --lines 80

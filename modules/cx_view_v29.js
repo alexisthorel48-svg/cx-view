@@ -8,7 +8,7 @@ function register({app,q,auth,notifyPlayer}){
  const scope=(req,alias='s')=>isSuper(req)?{sql:'',params:[]}:{sql:` AND ${alias}.client_id=$1`,params:[clientId(req)]};
  const log=(label,e)=>console.error(`[V0.7.3] ${label}:`,e);
 
- app.get('/api/v29/context',auth,(req,res)=>res.json({role:role(req),client_id:clientId(req),super_admin:isSuper(req),can_manage:canManage(req)}));
+ app.get('/api/v29/context',auth,(req,res)=>res.json({role:role(req),client_id:clientId(req),super_admin:isSuper(req),can_manage:canManage(req),can_delete_screen:isSuper(req),can_create_screen:isSuper(req)}));
 
  app.get('/api/v29/clients',auth,async(req,res)=>{try{
    const p=[];let where='';if(!isSuper(req)){p.push(clientId(req));where='WHERE c.id=$1'}
@@ -122,7 +122,7 @@ function register({app,q,auth,notifyPlayer}){
  app.get('/api/v29/screens',auth,async(req,res)=>{try{let p=[],where=' WHERE 1=1';if(!isSuper(req)){p.push(clientId(req));where+=` AND s.client_id=$${p.length}`};if(req.query.client_id&&isSuper(req)){p.push(req.query.client_id);where+=` AND s.client_id=$${p.length}`};if(req.query.site_id){p.push(req.query.site_id);where+=` AND s.site_id=$${p.length}`};if(req.query.group_id){p.push(req.query.group_id);where+=` AND s.group_id=$${p.length}`};if(req.query.status==='online')where+=` AND s.last_seen_at>NOW()-INTERVAL '5 minutes'`;if(req.query.status==='offline')where+=` AND (s.last_seen_at IS NULL OR s.last_seen_at<=NOW()-INTERVAL '5 minutes')`;if(req.query.search){p.push('%'+req.query.search+'%');where+=` AND (s.name ILIKE $${p.length} OR s.pairing_code ILIKE $${p.length} OR COALESCE(s.location_label,'') ILIKE $${p.length} OR COALESCE(c.name,'') ILIKE $${p.length} OR COALESCE(g.name,'') ILIKE $${p.length})`};const r=await q(`SELECT s.*,c.name client_name,st.name site_name,g.name group_name,pa.name playlist_a_name,pb.name playlist_b_name,(s.last_seen_at>NOW()-INTERVAL '5 minutes') online FROM cx_screens s LEFT JOIN cx_clients c ON c.id=s.client_id LEFT JOIN cx_sites st ON st.id=s.site_id LEFT JOIN cx_screen_groups g ON g.id=s.group_id LEFT JOIN cx_playlists pa ON pa.id=s.playlist_a_id LEFT JOIN cx_playlists pb ON pb.id=s.playlist_b_id${where} ORDER BY COALESCE(c.name,''),COALESCE(st.name,''),s.name`,p);res.json(r.rows)}catch(e){log('screens list',e);res.status(500).json({error:e.message})}});
  app.get('/api/v29/screens/:id',auth,async(req,res)=>{try{const p=[req.params.id];let sql=`SELECT s.*,c.name client_name,st.name site_name,g.name group_name,pa.name playlist_a_name,pb.name playlist_b_name,(s.last_seen_at>NOW()-INTERVAL '5 minutes') online FROM cx_screens s LEFT JOIN cx_clients c ON c.id=s.client_id LEFT JOIN cx_sites st ON st.id=s.site_id LEFT JOIN cx_screen_groups g ON g.id=s.group_id LEFT JOIN cx_playlists pa ON pa.id=s.playlist_a_id LEFT JOIN cx_playlists pb ON pb.id=s.playlist_b_id WHERE s.id=$1`;if(!isSuper(req)){p.push(clientId(req));sql+=' AND s.client_id=$2'}const r=await q(sql,p);if(!r.rows[0])return res.status(404).json({error:'Écran introuvable'});res.json(r.rows[0])}catch(e){log('screen detail',e);res.status(500).json({error:e.message})}});
  app.delete('/api/v29/screens/:id',auth,async(req,res)=>{try{
-   if(!canManage(req))return deny(res);
+   if(!isSuper(req))return deny(res,'Réservé au Super Admin');
    const p=[req.params.id];let sql='DELETE FROM cx_screens WHERE id=$1';
    if(!isSuper(req)){p.push(clientId(req));sql+=' AND client_id=$2'}
    sql+=' RETURNING id,name,pairing_code';

@@ -4,7 +4,7 @@ async function loadDashboard() {
   try {
     const d = await GET('/api/dashboard');
     el.innerHTML = `
-      <div class="page-header"><h1 class="page-title">📊 Tableau de bord</h1></div>
+      <div class="page-header"><h1 class="page-title">📊 Tableau de bord</h1><div class="actions">${['SUPER_ADMIN','SUPER'].includes(String(window.cxCurrentUser?.role||'').toUpperCase())?'<a class="btn btn-secondary" href="/api/player/latest/download">⬇ Télécharger le dernier Player</a>':''}</div></div>
       <div class="cards-grid">
         <div class="stat-card"><div class="stat-label">Clients actifs</div><div class="stat-value">${d.clients}</div></div>
         <div class="stat-card"><div class="stat-label">Médias actifs</div><div class="stat-value">${d.media}</div></div>

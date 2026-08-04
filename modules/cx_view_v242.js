@@ -26,7 +26,10 @@ function register({ app, q, auth, adminOnly, notifyPlayer }) {
         LEFT JOIN cx_workspaces aw ON aw.id=ass.workspace_id
         WHERE s.id=$1`, [req.params.id]);
       if (!r.rows[0]) return res.status(404).json({ error: 'Écran introuvable' });
-      res.json(r.rows[0]);
+      const screen = r.rows[0];
+      if (screen.layout === 'DOUBLE_H') screen.layout = 'VERTICAL';
+      if (screen.layout === 'DOUBLE_V') screen.layout = 'HORIZONTAL';
+      res.json(screen);
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -83,7 +86,8 @@ function register({ app, q, auth, adminOnly, notifyPlayer }) {
         zone_a_crop_top=$15,zone_a_crop_right=$16,zone_a_crop_bottom=$17,zone_a_crop_left=$18,
         zone_b_crop_top=$19,zone_b_crop_right=$20,zone_b_crop_bottom=$21,zone_b_crop_left=$22,
         zone_a_crop_mode=$23,zone_b_crop_mode=$24,
-        sync_version=COALESCE(sync_version,0)+1
+        sync_version=COALESCE(sync_version,0)+1,
+        config_version=COALESCE(config_version,1)+1
         WHERE id=$25 RETURNING *`, [
           String(req.body.name || old.name).trim(), width, height,
           clamp(req.body.orientation, 0, 359, Number(old.orientation)||0), layout,
@@ -99,7 +103,13 @@ function register({ app, q, auth, adminOnly, notifyPlayer }) {
         ]);
       notifyPlayer(r.rows[0].pairing_code, { type: 'sync', screenId: r.rows[0].id });
       res.json(r.rows[0]);
-    } catch (e) { res.status(400).json({ error: e.message }); }
+    } catch (e) {
+      console.error('[V242][SCREEN_CONFIG_SAVE]', { screen_id: req.params.id, layout: req.body.layout, error: e.message });
+      const hint = String(e.constraint || '').includes('layout')
+        ? 'La contrainte SQL des dispositions est obsolète. Exécuter npm run migrate:1.3.1.'
+        : undefined;
+      res.status(400).json({ error: e.message, code: e.code || null, constraint: e.constraint || null, hint });
+    }
   });
 }
 

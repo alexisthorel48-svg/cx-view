@@ -127,6 +127,38 @@ const superOnly = (req, res, next) => {
   next();
 };
 
+const isSuper = req => req.session && req.session.userRole === 'SUPER_ADMIN';
+const sessionClientId = req => {
+  const id = Number(req.session && req.session.clientId);
+  return Number.isFinite(id) && id > 0 ? id : null;
+};
+const requireTenant = (req, res) => {
+  if (isSuper(req)) return null;
+  const id = sessionClientId(req);
+  if (!id) res.status(403).json({ error: 'Ce compte n’est associé à aucun client.' });
+  return id;
+};
+async function owns(req, table, id) {
+  if (isSuper(req)) return true;
+  const clientId = sessionClientId(req);
+  if (!clientId) return false;
+  const allowed = new Set(['cx_folders','cx_media','cx_playlists','cx_screens']);
+  if (!allowed.has(table)) return false;
+  const r = await q(`SELECT 1 FROM ${table} WHERE id=$1 AND client_id=$2`, [id, clientId]);
+  return !!r.rows[0];
+}
+async function playlistMediaCompatible(req, playlistId, mediaIds) {
+  if (isSuper(req)) return true;
+  const clientId = sessionClientId(req);
+  if (!clientId) return false;
+  const p = await q('SELECT 1 FROM cx_playlists WHERE id=$1 AND client_id=$2', [playlistId, clientId]);
+  if (!p.rows[0]) return false;
+  const ids = [...new Set((mediaIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return true;
+  const m = await q('SELECT id FROM cx_media WHERE id=ANY($1::int[]) AND client_id=$2', [ids, clientId]);
+  return m.rows.length === ids.length;
+}
+
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
 app.get('/playlist-preview', auth, (req, res) => {
@@ -160,20 +192,49 @@ app.get('/api/auth/me', auth, async (req, res) => {
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
 app.get('/api/dashboard', auth, async (req, res) => {
   try {
+    const superAdmin = isSuper(req);
+    const cid = superAdmin ? null : requireTenant(req, res);
+    if (!superAdmin && !cid) return;
+    const scope = superAdmin ? '' : ' AND client_id=$1';
+    const screenScope = superAdmin ? '' : ' WHERE client_id=$1';
+    const params = superAdmin ? [] : [cid];
     const [clients, media, playlists, screens, logs, screensOnline] = await Promise.all([
-      q('SELECT COUNT(*) FROM cx_clients WHERE active=true'),
-      q("SELECT COUNT(*) FROM cx_media WHERE status='ACTIVE'"),
-      q('SELECT COUNT(*) FROM cx_playlists'),
-      q('SELECT COUNT(*) FROM cx_screens'),
-      q("SELECT COUNT(*) FROM cx_logs WHERE played_at > NOW() - INTERVAL '24 hours'"),
-      q("SELECT COUNT(*) FROM cx_screens WHERE last_seen_at > NOW() - INTERVAL '5 minutes'")
+      superAdmin ? q('SELECT COUNT(*) FROM cx_clients WHERE active=true') : q('SELECT COUNT(*) FROM cx_clients WHERE id=$1 AND active=true', params),
+      q(`SELECT COUNT(*) FROM cx_media WHERE status='ACTIVE'${scope}`, params),
+      q(`SELECT COUNT(*) FROM cx_playlists WHERE 1=1${scope}`, params),
+      q(`SELECT COUNT(*) FROM cx_screens${screenScope}`, params),
+      superAdmin
+        ? q("SELECT COUNT(*) FROM cx_logs WHERE played_at > NOW() - INTERVAL '24 hours'")
+        : q("SELECT COUNT(*) FROM cx_logs l JOIN cx_screens s ON s.id=l.screen_id WHERE l.played_at > NOW() - INTERVAL '24 hours' AND s.client_id=$1", params),
+      superAdmin
+        ? q("SELECT COUNT(*) FROM cx_screens WHERE last_seen_at > NOW() - INTERVAL '5 minutes'")
+        : q("SELECT COUNT(*) FROM cx_screens WHERE last_seen_at > NOW() - INTERVAL '5 minutes' AND client_id=$1", params)
     ]);
     let diskUsed = 0;
-    const uploadsDir = path.join(MEDIA_ROOT, 'uploads');
-    if (fs.existsSync(uploadsDir)) {
-      fs.readdirSync(uploadsDir).forEach(f => {
-        try { diskUsed += fs.statSync(path.join(uploadsDir, f)).size; } catch {}
-      });
+    if (superAdmin) {
+      const uploadsDir = path.join(MEDIA_ROOT, 'uploads');
+      if (fs.existsSync(uploadsDir)) {
+        fs.readdirSync(uploadsDir).forEach(f => {
+          try { diskUsed += fs.statSync(path.join(uploadsDir, f)).size; } catch {}
+        });
+      }
+    } else {
+      const bytes = await q("SELECT COALESCE(SUM(file_size),0)::bigint AS total FROM cx_media WHERE status='ACTIVE' AND client_id=$1", params).catch(() => ({rows:[{total:0}]}));
+      diskUsed = Number(bytes.rows[0]?.total || 0);
+    }
+    let vpsStorage = null;
+    if (superAdmin) {
+      try {
+        const stats = fs.statfsSync('/');
+        const blockSize = Number(stats.bsize || 0);
+        const totalBytes = Number(stats.blocks || 0) * blockSize;
+        const freeBytes = Number(stats.bavail || stats.bfree || 0) * blockSize;
+        const usedBytes = Math.max(0, totalBytes - freeBytes);
+        const usedPercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 1000) / 10 : 0;
+        vpsStorage = { totalBytes, usedBytes, freeBytes, usedPercent };
+      } catch (diskError) {
+        console.error('VPS storage stats:', diskError.message);
+      }
     }
     res.json({
       clients: parseInt(clients.rows[0].count),
@@ -182,74 +243,83 @@ app.get('/api/dashboard', auth, async (req, res) => {
       screens: parseInt(screens.rows[0].count),
       screensOnline: parseInt(screensOnline.rows[0].count),
       logsToday: parseInt(logs.rows[0].count),
-      diskUsedMb: Math.round(diskUsed / 1024 / 1024)
+      diskUsedMb: Math.round(diskUsed / 1024 / 1024),
+      tenantScoped: !superAdmin,
+      ...(superAdmin ? { vpsStorage } : {})
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── ACCOUNTS ────────────────────────────────────────────────────────────────
-app.get('/api/accounts', superOnly, async (req, res) => {
-  const r = await q('SELECT u.id,u.email,u.display_name,u.role,u.active,u.created_at,c.name as client_name FROM cx_users u LEFT JOIN cx_clients c ON c.id=u.client_id ORDER BY u.created_at DESC');
-  res.json(r.rows);
+app.get('/api/accounts', adminOnly, async (req, res) => {
+  const params = [];
+  let sql = 'SELECT u.id,u.email,u.display_name,u.role,u.active,u.created_at,u.client_id,c.name as client_name FROM cx_users u LEFT JOIN cx_clients c ON c.id=u.client_id';
+  if (!isSuper(req)) { const cid=requireTenant(req,res); if (!cid) return; params.push(cid); sql += ' WHERE u.client_id=$1'; }
+  sql += ' ORDER BY u.created_at DESC';
+  const r = await q(sql, params); res.json(r.rows);
 });
-
-app.post('/api/accounts', superOnly, async (req, res) => {
+app.post('/api/accounts', adminOnly, async (req, res) => {
   try {
-    const { email, password, display_name, role, client_id } = req.body;
+    const { email, password, display_name } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
+    const clientId = isSuper(req) ? (req.body.client_id || null) : requireTenant(req,res);
+    if (!isSuper(req) && !clientId) return;
+    const role = isSuper(req) ? (req.body.role || 'ADMIN') : (req.body.role === 'USER' ? 'USER' : 'ADMIN');
     const hash = await bcrypt.hash(password, 12);
-    const r = await q(
-      'INSERT INTO cx_users(email,password_hash,display_name,role,client_id) VALUES($1,$2,$3,$4,$5) RETURNING id,email,display_name,role,active,created_at',
-      [email, hash, display_name || email, role || 'ADMIN', client_id || null]
-    );
+    const r = await q('INSERT INTO cx_users(email,password_hash,display_name,role,client_id) VALUES($1,$2,$3,$4,$5) RETURNING id,email,display_name,role,active,client_id,created_at', [email,hash,display_name||email,role,clientId]);
     res.json(r.rows[0]);
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch(e){ res.status(400).json({error:e.message}); }
 });
-
-app.put('/api/accounts/:id', superOnly, async (req, res) => {
+app.put('/api/accounts/:id', adminOnly, async (req,res)=>{
   try {
-    const { email, display_name, role, client_id, active, password } = req.body;
-    if (password) {
-      const hash = await bcrypt.hash(password, 12);
-      await q('UPDATE cx_users SET password_hash=$1 WHERE id=$2', [hash, req.params.id]);
-    }
-    const r = await q(
-      'UPDATE cx_users SET email=$1,display_name=$2,role=$3,client_id=$4,active=$5 WHERE id=$6 RETURNING id,email,display_name,role,active',
-      [email, display_name, role, client_id || null, active !== false, req.params.id]
-    );
+    const target = await q('SELECT * FROM cx_users WHERE id=$1',[req.params.id]);
+    const user=target.rows[0]; if(!user) return res.status(404).json({error:'Utilisateur introuvable'});
+    if(!isSuper(req) && Number(user.client_id)!==sessionClientId(req)) return res.status(403).json({error:'Accès refusé'});
+    if(!isSuper(req) && user.role==='SUPER_ADMIN') return res.status(403).json({error:'Accès refusé'});
+    if(req.body.password){ const hash=await bcrypt.hash(req.body.password,12); await q('UPDATE cx_users SET password_hash=$1 WHERE id=$2',[hash,user.id]); }
+    const clientId=isSuper(req)?(req.body.client_id||null):sessionClientId(req);
+    const role=isSuper(req)?(req.body.role||user.role):(req.body.role==='USER'?'USER':'ADMIN');
+    const r=await q('UPDATE cx_users SET email=$1,display_name=$2,role=$3,client_id=$4,active=$5 WHERE id=$6 RETURNING id,email,display_name,role,active,client_id',[req.body.email,req.body.display_name,role,clientId,req.body.active!==false,user.id]);
     res.json(r.rows[0]);
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  }catch(e){res.status(400).json({error:e.message});}
 });
-
-app.delete('/api/accounts/:id', superOnly, async (req, res) => {
-  if (parseInt(req.params.id) === req.session.userId) return res.status(400).json({ error: 'Impossible de supprimer votre propre compte' });
-  await q('DELETE FROM cx_users WHERE id=$1', [req.params.id]);
-  res.json({ ok: true });
+app.delete('/api/accounts/:id', adminOnly, async(req,res)=>{
+  if(Number(req.params.id)===Number(req.session.userId)) return res.status(400).json({error:'Impossible de supprimer votre propre compte'});
+  const target=await q('SELECT role,client_id FROM cx_users WHERE id=$1',[req.params.id]);
+  const user=target.rows[0]; if(!user) return res.status(404).json({error:'Utilisateur introuvable'});
+  if(!isSuper(req) && (Number(user.client_id)!==sessionClientId(req) || user.role==='SUPER_ADMIN')) return res.status(403).json({error:'Accès refusé'});
+  await q('DELETE FROM cx_users WHERE id=$1',[req.params.id]); res.json({ok:true});
 });
 
 // ─── CLIENTS ─────────────────────────────────────────────────────────────────
 app.get('/api/clients', auth, async (req, res) => {
-  const r = await q('SELECT * FROM cx_clients ORDER BY name');
+  if (req.session.userRole === 'SUPER_ADMIN') {
+    const r = await q('SELECT * FROM cx_clients ORDER BY name');
+    return res.json(r.rows);
+  }
+  const clientId = Number(req.session.clientId);
+  if (!clientId) return res.status(403).json({ error: 'Ce compte n’est associé à aucun client.' });
+  const r = await q('SELECT * FROM cx_clients WHERE id=$1', [clientId]);
   res.json(r.rows);
 });
-app.post('/api/clients', adminOnly, async (req, res) => {
+app.post('/api/clients', superOnly, async (req, res) => {
   try {
     const { name, contact_email } = req.body;
     const r = await q('INSERT INTO cx_clients(name,contact_email) VALUES($1,$2) RETURNING *', [name, contact_email || null]);
     res.json(r.rows[0]);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-app.put('/api/clients/:id', adminOnly, async (req, res) => {
+app.put('/api/clients/:id', superOnly, async (req, res) => {
   const { name, contact_email, active } = req.body;
   const r = await q('UPDATE cx_clients SET name=$1,contact_email=$2,active=$3 WHERE id=$4 RETURNING *', [name, contact_email || null, active !== false, req.params.id]);
   res.json(r.rows[0]);
 });
-app.delete('/api/clients/:id', adminOnly, async (req, res) => {
+app.delete('/api/clients/:id', superOnly, async (req, res) => {
   await q('DELETE FROM cx_clients WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 });
 
-cxViewV31.register({ app, q, auth, adminOnly, notifyPlayer, notifyScreens, MEDIA_ROOT, PUBLIC_BASE_URL });
+cxViewV31.register({ app, q, auth, adminOnly, superOnly, notifyPlayer, notifyScreens, MEDIA_ROOT, PUBLIC_BASE_URL });
 cxViewV24.register({ app, q, auth, adminOnly, superOnly, notifyPlayer });
 cxViewV241.register({ app, q, auth, adminOnly, notifyPlayer });
 cxViewV242.register({ app, q, auth, adminOnly, notifyPlayer });
@@ -259,20 +329,22 @@ cxViewV27.register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_B
 
 // ─── FOLDERS ─────────────────────────────────────────────────────────────────
 app.get('/api/folders', auth, async (req, res) => {
-  const r = await q('SELECT f.*,c.name as client_name FROM cx_folders f LEFT JOIN cx_clients c ON c.id=f.client_id ORDER BY f.name');
+  const cid=isSuper(req)?null:requireTenant(req,res); if(!isSuper(req)&&!cid)return; const r=await q('SELECT f.*,c.name as client_name FROM cx_folders f LEFT JOIN cx_clients c ON c.id=f.client_id'+(isSuper(req)?'':' WHERE f.client_id=$1')+' ORDER BY f.name',isSuper(req)?[]:[cid]);
   res.json(r.rows);
 });
 app.post('/api/folders', adminOnly, async (req, res) => {
   const { name, client_id, parent_id } = req.body;
-  const r = await q('INSERT INTO cx_folders(name,client_id,parent_id) VALUES($1,$2,$3) RETURNING *', [name, client_id || null, parent_id || null]);
+  const r = await q('INSERT INTO cx_folders(name,client_id,parent_id) VALUES($1,$2,$3) RETURNING *', [name, isSuper(req)?(client_id||null):requireTenant(req,res), parent_id || null]);
   res.json(r.rows[0]);
 });
 app.put('/api/folders/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_folders',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   const { name, client_id } = req.body;
-  const r = await q('UPDATE cx_folders SET name=$1,client_id=$2 WHERE id=$3 RETURNING *', [name, client_id || null, req.params.id]);
+  const r = await q('UPDATE cx_folders SET name=$1,client_id=$2 WHERE id=$3 RETURNING *', [name, isSuper(req)?(client_id||null):sessionClientId(req), req.params.id]);
   res.json(r.rows[0]);
 });
 app.delete('/api/folders/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_folders',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   await q('DELETE FROM cx_folders WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 });
@@ -306,7 +378,8 @@ app.get('/api/media', auth, async (req, res) => {
              LEFT JOIN cx_folders f ON f.id=m.folder_id
              WHERE m.status != 'PENDING_DELETE'`;
   const params = [];
-  if (req.query.client_id) { params.push(req.query.client_id); sql += ` AND m.client_id=$${params.length}`; }
+  if (!isSuper(req)) { const cid=requireTenant(req,res); if(!cid)return; params.push(cid); sql += ` AND m.client_id=$${params.length}`; }
+  if (isSuper(req) && req.query.client_id) { params.push(req.query.client_id); sql += ` AND m.client_id=$${params.length}`; }
   if (req.query.folder_id) { params.push(req.query.folder_id); sql += ` AND m.folder_id=$${params.length}`; }
   if (req.query.type) { params.push(req.query.type); sql += ` AND m.media_type=$${params.length}`; }
   if (req.query.status) { params.push(req.query.status); sql += ` AND m.status=$${params.length}`; }
@@ -341,7 +414,7 @@ app.post('/api/media/upload', adminOnly, upload.array('files', 50), async (req, 
       const r = await q(
         `INSERT INTO cx_media(client_id,folder_id,title,file_name,original_name,mime_type,media_type,bytes,thumbnail_name)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-        [req.body.client_id || null, req.body.folder_id || null, path.parse(file.originalname).name, file.filename, file.originalname, file.mimetype, mediaType, file.size, thumbName]
+        [isSuper(req)?(req.body.client_id||null):requireTenant(req,res), req.body.folder_id || null, path.parse(file.originalname).name, file.filename, file.originalname, file.mimetype, mediaType, file.size, thumbName]
       );
       results.push({ ok: true, media: r.rows[0] });
     } catch (e) { results.push({ ok: false, file: file.originalname, error: e.message }); }
@@ -350,15 +423,17 @@ app.post('/api/media/upload', adminOnly, upload.array('files', 50), async (req, 
 });
 
 app.put('/api/media/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_media',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   const { title, folder_id, client_id, keep_forever, delete_after } = req.body;
   const r = await q(
     'UPDATE cx_media SET title=$1,folder_id=$2,client_id=$3,keep_forever=$4,delete_after=$5 WHERE id=$6 RETURNING *',
-    [title, folder_id || null, client_id || null, keep_forever || false, delete_after || null, req.params.id]
+    [title, folder_id || null, isSuper(req)?(client_id||null):sessionClientId(req), keep_forever || false, delete_after || null, req.params.id]
   );
   res.json(r.rows[0]);
 });
 
 app.delete('/api/media/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_media',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   const r = await q('SELECT * FROM cx_media WHERE id=$1', [req.params.id]);
   const media = r.rows[0];
   if (!media) return res.status(404).json({ error: 'Introuvable' });
@@ -370,29 +445,32 @@ app.delete('/api/media/:id', adminOnly, async (req, res) => {
 
 // ─── PLAYLISTS ────────────────────────────────────────────────────────────────
 app.get('/api/playlists', auth, async (req, res) => {
+  const cid=isSuper(req)?null:requireTenant(req,res); if(!isSuper(req)&&!cid)return;
   const r = await q(`SELECT p.*,c.name as client_name,COUNT(pi.id) as item_count
-                     FROM cx_playlists p
-                     LEFT JOIN cx_clients c ON c.id=p.client_id
+                     FROM cx_playlists p LEFT JOIN cx_clients c ON c.id=p.client_id
                      LEFT JOIN cx_playlist_items pi ON pi.playlist_id=p.id
-                     GROUP BY p.id,c.name ORDER BY p.name`);
+                     ${isSuper(req)?'':'WHERE p.client_id=$1'} GROUP BY p.id,c.name ORDER BY p.name`, isSuper(req)?[]:[cid]);
   res.json(r.rows);
 });
 app.post('/api/playlists', adminOnly, async (req, res) => {
   const { name, client_id, description } = req.body;
-  const r = await q('INSERT INTO cx_playlists(name,client_id,description) VALUES($1,$2,$3) RETURNING *', [name, client_id || null, description || null]);
+  const r = await q('INSERT INTO cx_playlists(name,client_id,description) VALUES($1,$2,$3) RETURNING *', [name, isSuper(req)?(client_id||null):requireTenant(req,res), description || null]);
   res.json(r.rows[0]);
 });
 app.put('/api/playlists/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   const { name, client_id, description } = req.body;
-  const r = await q('UPDATE cx_playlists SET name=$1,client_id=$2,description=$3 WHERE id=$4 RETURNING *', [name, client_id || null, description || null, req.params.id]);
+  const r = await q('UPDATE cx_playlists SET name=$1,client_id=$2,description=$3 WHERE id=$4 RETURNING *', [name, isSuper(req)?(client_id||null):sessionClientId(req), description || null, req.params.id]);
   res.json(r.rows[0]);
 });
 app.delete('/api/playlists/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   await q('DELETE FROM cx_playlists WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 });
 
 app.get('/api/playlists/:id/items', auth, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   const r = await q(`SELECT pi.*,m.title,m.thumbnail_name,m.media_type,m.file_name
                      FROM cx_playlist_items pi
                      LEFT JOIN cx_media m ON m.id=pi.media_id
@@ -401,6 +479,7 @@ app.get('/api/playlists/:id/items', auth, async (req, res) => {
 });
 
 app.post('/api/playlists/:id/items', adminOnly, async (req, res) => {
+  if (!(await playlistMediaCompatible(req,req.params.id,[req.body.media_id]))) return res.status(403).json({error:'Playlist ou média inaccessible'});
   const { item_type, media_id, widget_type, widget_config, position, duration_seconds, play_forever,
           schedule_start, schedule_end, schedule_days, schedule_time_from, schedule_time_to,
           is_priority, priority_interval_minutes, priority_count } = req.body;
@@ -424,6 +503,7 @@ app.post('/api/playlists/:id/items/bulk', adminOnly, async (req, res) => {
   const mediaIds = Array.isArray(req.body.media_ids) ? req.body.media_ids.map(Number).filter(Boolean) : [];
   const duration = Math.max(1, Number(req.body.duration_seconds) || 10);
   if (!mediaIds.length) return res.status(400).json({ error: 'Aucun média sélectionné' });
+  if (!(await playlistMediaCompatible(req,req.params.id,mediaIds))) return res.status(403).json({error:'Playlist ou média inaccessible'});
   const pos = await q('SELECT COALESCE(MAX(position),-1) AS max FROM cx_playlist_items WHERE playlist_id=$1', [req.params.id]);
   let position = Number(pos.rows[0].max) + 1;
   const created = [];
@@ -440,6 +520,7 @@ app.post('/api/playlists/:id/items/bulk', adminOnly, async (req, res) => {
 });
 
 app.put('/api/playlists/:pid/items/bulk', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.pid))) return res.status(403).json({error:'Accès refusé'});
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
   const patch = req.body.patch || {};
   if (!ids.length) return res.status(400).json({ error: 'Aucun contenu sélectionné' });
@@ -466,6 +547,7 @@ app.put('/api/playlists/:pid/items/bulk', adminOnly, async (req, res) => {
 });
 
 app.post('/api/playlists/:pid/items/delete-bulk', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.pid))) return res.status(403).json({error:'Accès refusé'});
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
   if (!ids.length) return res.status(400).json({ error: 'Aucun contenu sélectionné' });
   await q('DELETE FROM cx_playlist_items WHERE playlist_id=$1 AND id=ANY($2::int[])', [req.params.pid, ids]);
@@ -473,11 +555,13 @@ app.post('/api/playlists/:pid/items/delete-bulk', adminOnly, async (req, res) =>
 });
 
 app.delete('/api/playlists/:id/items', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   await q('DELETE FROM cx_playlist_items WHERE playlist_id=$1', [req.params.id]);
   res.json({ ok: true });
 });
 
 app.post('/api/playlists/:id/duplicate', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   const source = await q('SELECT * FROM cx_playlists WHERE id=$1', [req.params.id]);
   if (!source.rows[0]) return res.status(404).json({ error: 'Playlist introuvable' });
   const p = source.rows[0];
@@ -498,6 +582,7 @@ app.post('/api/playlists/:id/duplicate', adminOnly, async (req, res) => {
 });
 
 app.put('/api/playlists/:pid/items/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.pid))) return res.status(403).json({error:'Accès refusé'});
   const { duration_seconds, position, active, schedule_start, schedule_end, schedule_days,
           schedule_time_from, schedule_time_to, widget_config, play_forever,
           is_priority, priority_interval_minutes, priority_count } = req.body;
@@ -516,11 +601,13 @@ app.put('/api/playlists/:pid/items/:id', adminOnly, async (req, res) => {
 });
 
 app.delete('/api/playlists/:pid/items/:id', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.pid))) return res.status(403).json({error:'Accès refusé'});
   await q('DELETE FROM cx_playlist_items WHERE id=$1 AND playlist_id=$2', [req.params.id, req.params.pid]);
   res.json({ ok: true });
 });
 
 app.post('/api/playlists/:id/reorder', adminOnly, async (req, res) => {
+  if (!(await owns(req,'cx_playlists',req.params.id))) return res.status(403).json({error:'Accès refusé'});
   const { order } = req.body;
   for (const item of order) {
     await q('UPDATE cx_playlist_items SET position=$1 WHERE id=$2 AND playlist_id=$3', [item.position, item.id, req.params.id]);
@@ -536,35 +623,44 @@ app.get('/api/screens', auth, async (req, res) => {
                      LEFT JOIN cx_clients c ON c.id=s.client_id
                      LEFT JOIN cx_playlists pa ON pa.id=s.playlist_a_id
                      LEFT JOIN cx_playlists pb ON pb.id=s.playlist_b_id
-                     ORDER BY s.name`);
+                     ${isSuper(req)?'':'WHERE s.client_id=$1'} ORDER BY s.name`, isSuper(req)?[]:[requireTenant(req,res)]);
   res.json(r.rows);
 });
 app.post('/api/screens', adminOnly, async (req, res) => {
+  if (!isSuper(req)) return res.status(403).json({ error: "Création d'écran réservée au Super Admin" });
   try {
     const { name, client_id, width_px, height_px, orientation, layout, playlist_a_id, playlist_b_id,
       standby_color, display_mode, monitor_id } = req.body;
+    if (!String(name || '').trim()) return res.status(400).json({ error: 'Nom de l’écran requis' });
+
+    // La création d’écran est strictement réservée au SUPER_ADMIN.
+    const effectiveClientId = client_id || null;
+
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     const r = await q(
       `INSERT INTO cx_screens(name,client_id,pairing_code,width_px,height_px,orientation,layout,
        playlist_a_id,playlist_b_id,standby_color,display_mode,monitor_id,sync_version)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1) RETURNING *`,
-      [name, client_id || null, code, Math.max(100, Number(width_px) || 1920),
+      [String(name).trim(), effectiveClientId, code, Math.max(100, Number(width_px) || 1920),
        Math.max(100, Number(height_px) || 1080), Number(orientation) || 0, layout || 'SINGLE',
        playlist_a_id || null, playlist_b_id || null, standby_color || '#000000',
        display_mode === 'KIOSK' ? 'KIOSK' : 'WINDOW', Math.max(0, Number(monitor_id) || 0)]
     );
-    res.json(r.rows[0]);
+
+
+    res.status(201).json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.put('/api/screens/:id', adminOnly, async (req, res) => {
   try {
+    if (!(await owns(req,'cx_screens',req.params.id))) return res.status(403).json({error:'Accès refusé'});
     const { name, client_id, width_px, height_px, orientation, layout, playlist_a_id, playlist_b_id,
       standby_color, display_mode, monitor_id } = req.body;
     const r = await q(
       `UPDATE cx_screens SET name=$1,client_id=$2,width_px=$3,height_px=$4,orientation=$5,layout=$6,
        playlist_a_id=$7,playlist_b_id=$8,standby_color=$9,display_mode=$10,monitor_id=$11,
        sync_version=COALESCE(sync_version,0)+1 WHERE id=$12 RETURNING *`,
-      [name, client_id || null, Math.max(100, Number(width_px) || 1920),
+      [name, isSuper(req)?(client_id||null):sessionClientId(req), Math.max(100, Number(width_px) || 1920),
        Math.max(100, Number(height_px) || 1080), Number(orientation) || 0, layout || 'SINGLE',
        playlist_a_id || null, playlist_b_id || null, standby_color || '#000000',
        display_mode === 'KIOSK' ? 'KIOSK' : 'WINDOW', Math.max(0, Number(monitor_id) || 0), req.params.id]
@@ -574,12 +670,13 @@ app.put('/api/screens/:id', adminOnly, async (req, res) => {
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.delete('/api/screens/:id', adminOnly, async (req, res) => {
+app.delete('/api/screens/:id', superOnly, async (req, res) => {
   await q('DELETE FROM cx_screens WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 });
 app.post('/api/screens/:id/sync', adminOnly, async (req, res) => {
   try {
+    if (!(await owns(req,'cx_screens',req.params.id))) return res.status(403).json({error:'Accès refusé'});
     const updated = await q(
       'UPDATE cx_screens SET sync_version=COALESCE(sync_version,0)+1 WHERE id=$1 RETURNING id,name,pairing_code,sync_version',
       [req.params.id]
@@ -671,7 +768,7 @@ cxViewV32.register({ app, q, auth, adminOnly });
 cxViewV33.register({ app, q, auth });
 cxViewV34.register({ app, q, superOnly, MEDIA_ROOT, PUBLIC_BASE_URL, notifyPlayer });
 cxViewV35.register({ app, q, PUBLIC_BASE_URL });
-cxViewIntegrationsV1.register({ app, q, auth, adminOnly });
+cxViewIntegrationsV1.register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_BASE_URL });
 
 // ─── API PLAYER ───────────────────────────────────────────────────────────────
 app.get('/api/player/:code', async (req, res) => {

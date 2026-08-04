@@ -1,0 +1,16 @@
+CX VIEW 1.3.2 — QR TO SCREEN + CACHE FIX
+
+Modifications principales:
+- Bouton QR to Screen visible dans chaque carte écran.
+- Bouton QR to Screen global dans l'en-tête de la page Écrans.
+- Modal avec QR Code réel, lien public, copie, téléchargement et test.
+- Cache désactivé pour app.html, /screens et v2-screens.js afin d'éviter l'ancienne interface.
+- Réponse de session enrichie avec max_uses.
+- Pages et routes QR marquées no-store.
+- Backend upload image/vidéo et commande QR_TO_SCREEN conservés et renforcés.
+
+Migration requise:
+  npm run migrate:1.3.1
+
+Process PM2 attendu:
+  cx-view-rebuild

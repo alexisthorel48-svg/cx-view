@@ -6,8 +6,20 @@ const multer = require('multer');
 function safeName(value) {
   return String(value || '').trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').slice(0, 180);
 }
+function isSuper(req) {
+  return !!(req.session && req.session.userRole === 'SUPER_ADMIN');
+}
 function roleClient(req) {
-  return req.session && req.session.userRole === 'CLIENT' ? Number(req.session.clientId) : null;
+  if (isSuper(req)) return null;
+  const value = Number(req.session && req.session.clientId);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+function denyUnscoped(req, res) {
+  if (!isSuper(req) && !roleClient(req)) {
+    res.status(403).json({ error: 'Ce compte n’est associé à aucun client.' });
+    return true;
+  }
+  return false;
 }
 function dayKey(date = new Date()) {
   return ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][date.getDay()];
@@ -28,7 +40,7 @@ function ruleMatches(rule, now = new Date()) {
 }
 
 module.exports = {
-  register({ app, q, auth, adminOnly, notifyPlayer, notifyScreens, MEDIA_ROOT }) {
+  register({ app, q, auth, adminOnly, superOnly, notifyPlayer, notifyScreens, MEDIA_ROOT }) {
     const uploadRoot = path.join(MEDIA_ROOT, 'uploads');
     const thumbRoot = path.join(MEDIA_ROOT, 'thumbs');
     fs.mkdirSync(uploadRoot, { recursive: true });
@@ -96,12 +108,13 @@ module.exports = {
     // ── Explorer de dossiers ─────────────────────────────────────────────────
     app.get('/api/v31/folders', auth, async (req, res) => {
       try {
+        if (denyUnscoped(req, res)) return;
         const clientId = roleClient(req);
         const base = `SELECT f.*,c.name client_name,
           (SELECT COUNT(*)::int FROM cx_media m WHERE m.folder_id=f.id AND m.status!='PENDING_DELETE') media_count,
           (SELECT COUNT(*)::int FROM cx_folders child WHERE child.parent_id=f.id) child_count
           FROM cx_folders f LEFT JOIN cx_clients c ON c.id=f.client_id`;
-        const query = clientId
+        const query = !isSuper(req)
           ? await q(base + ' WHERE f.client_id=$1 ORDER BY f.path NULLS FIRST,f.name', [clientId])
           : await q(base + ' ORDER BY f.path NULLS FIRST,f.name');
         res.json(query.rows);
@@ -113,7 +126,9 @@ module.exports = {
         const parentId = req.body.parent_id ? Number(req.body.parent_id) : null;
         const parent = parentId ? await folderRow(parentId) : null;
         if (parentId && !parent) return res.status(404).json({ error: 'Dossier parent introuvable.' });
-        const clientId = parent ? parent.client_id : (req.body.client_id ? Number(req.body.client_id) : null);
+        if (denyUnscoped(req, res)) return;
+        if (parent && !isSuper(req) && Number(parent.client_id) !== roleClient(req)) return res.status(403).json({ error: 'Accès refusé.' });
+        const clientId = parent ? parent.client_id : (isSuper(req) ? (req.body.client_id ? Number(req.body.client_id) : null) : roleClient(req));
         const id = await ensureFolder(parentId, clientId, req.body.name);
         const folder = await folderRow(id);
         res.status(201).json(folder);
@@ -124,6 +139,7 @@ module.exports = {
       try {
         const folder = await folderRow(req.params.id);
         if (!folder) return res.status(404).json({ error: 'Dossier introuvable.' });
+        if (!isSuper(req) && Number(folder.client_id) !== roleClient(req)) return res.status(403).json({ error: 'Accès refusé.' });
         const name = safeName(req.body.name || folder.name);
         await q('UPDATE cx_folders SET name=$1 WHERE id=$2', [name, folder.id]);
         await rebuildPath(folder.id);
@@ -135,6 +151,7 @@ module.exports = {
       try {
         const folder = await folderRow(req.params.id);
         if (!folder) return res.status(404).json({ error: 'Dossier introuvable.' });
+        if (!isSuper(req) && Number(folder.client_id) !== roleClient(req)) return res.status(403).json({ error: 'Accès refusé.' });
         const media = await q(`WITH RECURSIVE tree AS (
           SELECT id FROM cx_folders WHERE id=$1
           UNION ALL SELECT f.id FROM cx_folders f JOIN tree t ON f.parent_id=t.id
@@ -154,6 +171,7 @@ module.exports = {
 
     app.get('/api/v31/media', auth, async (req, res) => {
       try {
+        if (denyUnscoped(req, res)) return;
         const clientId = roleClient(req);
         const folderId = req.query.folder_id ? Number(req.query.folder_id) : null;
         const params = [];
@@ -162,7 +180,7 @@ module.exports = {
                    LEFT JOIN cx_folders f ON f.id=m.folder_id
                    LEFT JOIN cx_clients c ON c.id=m.client_id
                    WHERE m.status != 'PENDING_DELETE'`;
-        if (clientId) { params.push(clientId); sql += ` AND m.client_id=$${params.length}`; }
+        if (!isSuper(req)) { params.push(clientId); sql += ` AND m.client_id=$${params.length}`; }
         if (folderId) {
           const folder = await scopedFolder(req, folderId);
           if (!folder) return res.status(404).json({ error: 'Dossier introuvable.' });
@@ -188,6 +206,7 @@ module.exports = {
       try {
         const rootFolder = req.body.folder_id ? await folderRow(Number(req.body.folder_id)) : null;
         if (!rootFolder) return res.status(400).json({ error: 'Sélectionnez un dossier de destination.' });
+        if (!isSuper(req) && Number(rootFolder.client_id) !== roleClient(req)) return res.status(403).json({ error: 'Accès refusé.' });
         const paths = JSON.parse(req.body.relative_paths || '[]');
         for (let index = 0; index < req.files.length; index++) {
           const file = req.files[index];
@@ -221,12 +240,16 @@ module.exports = {
       } catch (error) { res.status(500).json({ error: error.message }); }
     });
 
-    app.get('/api/v31/media/unused', auth, async (_req, res) => {
+    app.get('/api/v31/media/unused', auth, async (req, res) => {
       try {
-        const result = await q(`SELECT m.*,c.name client_name,f.name folder_name
+        if (denyUnscoped(req, res)) return;
+        const params = [];
+        let sql = `SELECT m.*,c.name client_name,f.name folder_name
           FROM cx_media m LEFT JOIN cx_clients c ON c.id=m.client_id LEFT JOIN cx_folders f ON f.id=m.folder_id
-          WHERE NOT EXISTS (SELECT 1 FROM cx_playlist_items pi WHERE pi.media_id=m.id)
-          ORDER BY m.created_at DESC`);
+          WHERE NOT EXISTS (SELECT 1 FROM cx_playlist_items pi WHERE pi.media_id=m.id)`;
+        if (!isSuper(req)) { params.push(roleClient(req)); sql += ` AND m.client_id=$${params.length}`; }
+        sql += ' ORDER BY m.created_at DESC';
+        const result = await q(sql, params);
         res.json(result.rows);
       } catch (error) { res.status(500).json({ error: error.message }); }
     });
@@ -237,7 +260,12 @@ module.exports = {
         if (!ids.length) return res.status(400).json({ error: 'Aucun média sélectionné.' });
         const used = await q('SELECT DISTINCT media_id FROM cx_playlist_items WHERE media_id=ANY($1::int[])', [ids]);
         if (used.rows.length) return res.status(409).json({ error: 'Certains médias sont encore utilisés dans une playlist.', used_media_ids: used.rows.map(x=>x.media_id) });
-        const result = await q('SELECT id,file_name,thumbnail_name FROM cx_media WHERE id=ANY($1::int[])', [ids]);
+        if (denyUnscoped(req, res)) return;
+        const params = [ids];
+        let mediaSql = 'SELECT id,file_name,thumbnail_name,client_id FROM cx_media WHERE id=ANY($1::int[])';
+        if (!isSuper(req)) { params.push(roleClient(req)); mediaSql += ' AND client_id=$2'; }
+        const result = await q(mediaSql, params);
+        if (result.rows.length !== ids.length) return res.status(403).json({ error: 'Un ou plusieurs médias ne vous appartiennent pas.' });
         for (const item of result.rows) {
           try { if (item.file_name) fs.unlinkSync(path.join(MEDIA_ROOT, 'uploads', item.file_name)); } catch {}
           try { if (item.thumbnail_name) fs.unlinkSync(path.join(MEDIA_ROOT, 'thumbs', item.thumbnail_name)); } catch {}
@@ -252,9 +280,46 @@ module.exports = {
         const ids = (req.body.media_ids || []).map(Number).filter(Boolean);
         const folder = await folderRow(req.body.folder_id);
         if (!ids.length || !folder) return res.status(400).json({ error: 'Médias ou dossier invalides.' });
+        if (denyUnscoped(req, res)) return;
+        if (!isSuper(req) && Number(folder.client_id) !== roleClient(req)) return res.status(403).json({ error: 'Dossier inaccessible.' });
+        const owned = await q('SELECT id FROM cx_media WHERE id=ANY($1::int[])' + (!isSuper(req) ? ' AND client_id=$2' : ''), !isSuper(req) ? [ids, roleClient(req)] : [ids]);
+        if (owned.rows.length !== ids.length) return res.status(403).json({ error: 'Un ou plusieurs médias ne vous appartiennent pas.' });
         await q('UPDATE cx_media SET folder_id=$1,client_id=$2 WHERE id=ANY($3::int[])', [folder.id, folder.client_id, ids]);
         res.json({ ok: true, count: ids.length });
       } catch (error) { res.status(500).json({ error: error.message }); }
+    });
+
+
+    app.put('/api/v31/media/:id', adminOnly, async (req, res) => {
+      try {
+        if (denyUnscoped(req, res)) return;
+        const params = [Number(req.params.id)];
+        let sql = 'SELECT * FROM cx_media WHERE id=$1';
+        if (!isSuper(req)) { params.push(roleClient(req)); sql += ' AND client_id=$2'; }
+        const media = (await q(sql, params)).rows[0];
+        if (!media) return res.status(404).json({ error: 'Média introuvable.' });
+        const title = safeName(req.body.title || media.title);
+        const updated = await q('UPDATE cx_media SET title=$1 WHERE id=$2 RETURNING *', [title, media.id]);
+        res.json(updated.rows[0]);
+      } catch (error) { res.status(400).json({ error: error.message }); }
+    });
+
+    app.post('/api/v31/media/assign', superOnly, async (req, res) => {
+      try {
+        const ids = [...new Set((req.body.media_ids || []).map(Number).filter(Boolean))];
+        const clientId = req.body.client_id === null || req.body.client_id === '' ? null : Number(req.body.client_id);
+        if (!ids.length) return res.status(400).json({ error: 'Aucun média sélectionné.' });
+        if (clientId !== null) {
+          const client = (await q('SELECT id FROM cx_clients WHERE id=$1 AND active=true', [clientId])).rows[0];
+          if (!client) return res.status(404).json({ error: 'Client introuvable ou inactif.' });
+        }
+        const found = await q('SELECT id FROM cx_media WHERE id=ANY($1::int[])', [ids]);
+        if (found.rows.length !== ids.length) return res.status(404).json({ error: 'Un ou plusieurs médias sont introuvables.' });
+        const folderName = clientId === null ? 'Bibliothèque globale' : 'Médias';
+        const folderId = await ensureFolder(null, clientId, folderName);
+        const result = await q('UPDATE cx_media SET client_id=$1,folder_id=$2 WHERE id=ANY($3::int[]) RETURNING id,client_id,folder_id', [clientId, folderId, ids]);
+        res.json({ ok: true, count: result.rows.length, client_id: clientId, folder_id: folderId });
+      } catch (error) { res.status(400).json({ error: error.message }); }
     });
 
     // ── Classement réel des écrans ────────────────────────────────────────────
