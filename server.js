@@ -990,4 +990,28 @@ httpServer.on('upgrade', (request, socket, head) => {
   });
 });
 
+// Purge des médias envoyés via QR to Screen : contenu personnel de tiers, affiché
+// temporairement (quelques dizaines de secondes), qui n'a aucune raison de rester
+// stocké indéfiniment sur le serveur une fois les sessions expirées.
+const QR_TO_SCREEN_ROOT = path.join(MEDIA_ROOT, 'qr-to-screen');
+const QR_TO_SCREEN_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h : large marge au-delà de la validité max d'une session (24h) et de sa durée d'affichage (10 min max)
+async function cleanupQrToScreen() {
+  try {
+    await q('DELETE FROM cx_qr_sessions WHERE expires_at < NOW() - INTERVAL \'1 day\'');
+  } catch (_) {}
+  try {
+    const files = fs.readdirSync(QR_TO_SCREEN_ROOT);
+    const now = Date.now();
+    for (const file of files) {
+      const filePath = path.join(QR_TO_SCREEN_ROOT, file);
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.isFile() && now - stat.mtimeMs > QR_TO_SCREEN_MAX_AGE_MS) fs.rmSync(filePath, { force: true });
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+setInterval(cleanupQrToScreen, 60 * 60 * 1000);
+setTimeout(cleanupQrToScreen, 30 * 1000);
+
 httpServer.listen(PORT, () => console.log(`✅ CX-View Admin V1.5 Full Kiosk & Design démarré sur le port ${PORT}`));
