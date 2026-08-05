@@ -82,13 +82,50 @@ function register({ app, q, PUBLIC_BASE_URL }) {
        WHERE pi.playlist_id=$1 AND pi.active=true
        ORDER BY pi.position ASC,pi.id ASC`, [playlistId]
     );
+    const canvasMediaIds = new Set();
+    for (const row of itemResult.rows) {
+      if (String(row.item_type || '').toUpperCase() !== 'CANVAS') continue;
+      const elements = parseJson(row.widget_config, {}).elements;
+      if (!Array.isArray(elements)) continue;
+      for (const el of elements) if (el && el.kind === 'MEDIA' && el.media_id) canvasMediaIds.add(Number(el.media_id));
+    }
+    let canvasMediaMap = {};
+    if (canvasMediaIds.size) {
+      const mr = await q(
+        'SELECT id,title,file_name,thumbnail_name,mime_type,media_type,bytes AS file_size FROM cx_media WHERE id = ANY($1::int[])',
+        [[...canvasMediaIds]]
+      );
+      canvasMediaMap = Object.fromEntries(mr.rows.map(m => [String(m.id), {
+        id: m.id,
+        title: m.title,
+        media_type: m.media_type,
+        mime_type: m.mime_type,
+        size: asNumber(m.file_size),
+        file_name: m.file_name || null,
+        url: m.file_name ? `${baseUrl}/files/uploads/${encodeURIComponent(m.file_name)}` : null,
+        thumbnail_url: m.thumbnail_name ? `${PUBLIC_BASE_URL}/files/thumbs/${m.thumbnail_name}` : null
+      }]));
+    }
+    const resolveCanvasElements = elements => {
+      if (!Array.isArray(elements)) return [];
+      return elements
+        .filter(el => el && el.kind && el.x != null && el.y != null && el.width != null && el.height != null)
+        .map(el => ({
+          id: el.id,
+          kind: el.kind,
+          x: asNumber(el.x), y: asNumber(el.y), width: asNumber(el.width), height: asNumber(el.height),
+          layer: asNumber(el.layer, 0),
+          media: el.kind === 'MEDIA' ? (canvasMediaMap[String(el.media_id)] || null) : null,
+          widget: el.kind === 'WIDGET' ? { type: String(el.widget_type || 'CUSTOM').toUpperCase(), config: el.widget_config || {} } : null
+        }));
+    };
     const items = itemResult.rows.map(row => {
       const itemType = String(row.item_type || 'MEDIA').toUpperCase();
       const widgetConfig = parseJson(row.widget_config, {});
       return {
         id: row.id,
         type: itemType,
-        renderer: itemType === 'WIDGET' ? 'WIDGET' : (itemType === 'WEB' ? 'WEB' : 'MEDIA'),
+        renderer: itemType === 'WIDGET' ? 'WIDGET' : (itemType === 'WEB' ? 'WEB' : (itemType === 'CANVAS' ? 'CANVAS' : 'MEDIA')),
         position: asNumber(row.position),
         duration_seconds: Math.max(1, asNumber(row.duration_seconds, 10)),
         play_forever: !!row.play_forever,
@@ -105,6 +142,10 @@ function register({ app, q, PUBLIC_BASE_URL }) {
         widget: itemType === 'WIDGET' ? {
           type: String(row.widget_type || widgetConfig.type || 'CUSTOM').toUpperCase(),
           config: widgetConfig
+        } : null,
+        canvas: itemType === 'CANVAS' ? {
+          background: widgetConfig.background || null,
+          elements: resolveCanvasElements(widgetConfig.elements)
         } : null,
         schedule: {
           start: row.schedule_start || null,
