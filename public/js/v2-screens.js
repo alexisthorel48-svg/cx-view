@@ -26,8 +26,11 @@ async function refresh(){
  if(search)q.set('search',search);if(type)q.set('type',type);if(status)q.set('status',status);if(ws)q.set('workspace_id',ws);
  const rows=await cxApi.get('/api/v24/screens?'+q.toString());
  const online=rows.filter(x=>x.online).length;
- document.querySelector('#screen-summary').innerHTML=`<strong>${rows.length}</strong> écrans · <span class="screen-ok">${online} en ligne</span> · ${rows.length-online} hors ligne`;
- document.querySelector('#screen-grid').innerHTML=rows.length?rows.map(card).join(''):'<article class="panel empty-state"><h3>Aucun écran</h3><p>Aucun écran ne correspond aux filtres actuels.</p></article>';
+ const summaryEl=document.querySelector('#screen-summary');
+ if(summaryEl)summaryEl.innerHTML=`<strong>${rows.length}</strong> écrans · <span class="screen-ok">${online} en ligne</span> · ${rows.length-online} hors ligne`;
+ const gridEl=document.querySelector('#screen-grid');
+ if(!gridEl)return;
+ gridEl.innerHTML=rows.length?rows.map(card).join(''):'<article class="panel empty-state"><h3>Aucun écran</h3><p>Aucun écran ne correspond aux filtres actuels.</p></article>';
  document.querySelectorAll('[data-config]').forEach(b=>b.onclick=()=>openConfig(Number(b.dataset.config)));
  document.querySelectorAll('[data-assign]').forEach(b=>b.onclick=()=>assign(Number(b.dataset.assign),b.dataset.name));
  document.querySelectorAll('[data-sync]').forEach(b=>b.onclick=()=>syncScreen(Number(b.dataset.sync),'SYNC'));
