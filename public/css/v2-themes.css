@@ -26,6 +26,7 @@ html[data-theme="light"]{
   --border:#dfe3e8;
   --text2:#6d7684;
   --primary:#c99f00;
+  --danger:#c62834;
   --input-bg:#ffffff;
   --sidebar-bg:#ffffff;
   --topbar-bg:rgba(255,255,255,.92);
@@ -52,7 +53,7 @@ html[data-theme="light"] .nav a.active::before{background:#d4aa00}
 html[data-theme="light"] .nav .nav-icon{color:#77818e}
 html[data-theme="light"] .nav a.active .nav-icon{color:#b38d00}
 html[data-theme="light"] .nav-divider,html[data-theme="light"] .sidebar-bottom{border-color:var(--line);background-color:transparent}
-html[data-theme="light"] .nav-caption{color:#9299a3}
+html[data-theme="light"] .nav-caption{color:var(--muted)}
 html[data-theme="light"] .sidebar-status{color:#7e8793}
 html[data-theme="light"] .sidebar-bottom .ghost-btn{color:#5f6976;border-color:var(--line)}
 html[data-theme="light"] .sidebar-bottom .ghost-btn:hover{background:#f3f5f8;color:#1b2028}
@@ -102,6 +103,8 @@ html[data-theme="light"] .mf-details-empty>div,html[data-theme="light"] .mf-acti
 html[data-theme="light"] .mf-action-list button:hover{background:#e3e7ec}
 html[data-theme="light"] .mf-details-empty h3,html[data-theme="light"] .mf-empty h3{color:#20262e}
 html[data-theme="light"] .mf-meta dd{color:#303842}
+html[data-theme="light"] .mf-breadcrumbs button,html[data-theme="light"] .mf-breadcrumbs span,html[data-theme="light"] .mf-subbar span,html[data-theme="light"] .mf-item-copy span,html[data-theme="light"] .mf-empty,html[data-theme="light"] .mf-details-empty,html[data-theme="light"] .mf-meta dt,html[data-theme="light"] .mf-tree-empty{color:#596472}
+html[data-theme="light"] .mf-tree-item b,html[data-theme="light"] .mf-folder-icon,html[data-theme="light"] .mf-thumb>span,html[data-theme="light"] .mf-empty>div,html[data-theme="light"] .mf-details-title span,html[data-theme="light"] .icon-btn.active{color:#c99f00}
 
 /* Écrans */
 html[data-theme="light"] .screen-library-shell{background:#fff;border-color:var(--line)}
@@ -123,5 +126,10 @@ html[data-theme="light"] .pl-ruler{background:#f1f3f6}
 html[data-theme="light"] .pl-preview,html[data-theme="light"] .pl-thumb,html[data-theme="light"] .pl-media-thumb{background:#eef1f4}
 html[data-theme="light"] .report-zone,html[data-theme="light"] .report-list b{background:#eef1f4}
 html[data-theme="light"] .mon-log-row>span{filter:saturate(.8)}
+html[data-theme="light"] .mon-card footer strong{color:#1b2028}
+
+/* Texte rouge "danger" : les teintes pales pensees pour un fond sombre passent sous le
+   seuil de lisibilite sur fond blanc (ratio ~2-3:1). On les fonce uniquement en mode clair. */
+html[data-theme="light"] .danger,html[data-theme="light"] .danger-icon,html[data-theme="light"] .pl-danger-text{color:#c62834!important}
 
 @media(max-width:620px){.theme-toggle{width:36px;height:36px}.top-actions{gap:6px}}
