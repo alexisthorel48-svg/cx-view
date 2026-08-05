@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const ffmpeg = require('fluent-ffmpeg');
 const { qrDataUri } = require('./qr_svg');
 
 const PROVIDERS = Object.freeze({
@@ -100,8 +101,24 @@ function register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_BA
       const session=(await q(`SELECT qs.*,s.pairing_code,s.name screen_name FROM cx_qr_sessions qs JOIN cx_screens s ON s.id=qs.screen_id WHERE qs.token=$1 FOR UPDATE`,[req.params.token])).rows[0];
       if(!session || new Date(session.expires_at)<=new Date() || Number(session.use_count)>=Number(session.max_uses)) { if(req.file)fs.rmSync(req.file.path,{force:true}); return res.status(410).send('Lien expiré.'); }
       if(!req.file) return res.status(400).send('Fichier image ou vidéo requis.');
+      let fileName=req.file.filename,mimeType=req.file.mimetype;
+      if(/^video\//i.test(mimeType)&&mimeType!=='video/mp4'){
+        // Les vidéos captées sur iPhone arrivent en .mov (video/quicktime), illisible par le moteur Chromium du player.
+        // On reconvertit systématiquement en MP4/H.264 pour garantir la lecture, quelle que soit la provenance.
+        const mp4Name=fileName.replace(/\.[^.]+$/,'')+'.mp4';
+        const mp4Path=path.join(qrRoot,mp4Name);
+        try{
+          await new Promise((resolve,reject)=>{
+            ffmpeg(req.file.path).outputOptions(['-c:v libx264','-preset veryfast','-c:a aac','-movflags +faststart']).save(mp4Path).on('end',resolve).on('error',reject);
+          });
+          fs.rmSync(req.file.path,{force:true});
+          fileName=mp4Name;mimeType='video/mp4';
+        }catch(transcodeError){
+          // Conversion échouée : on garde le fichier original plutôt que de perdre l'envoi.
+        }
+      }
       const origin=PUBLIC_BASE_URL||`${req.protocol}://${req.get('host')}`;
-      const payload={url:`${origin}/files/qr-to-screen/${encodeURIComponent(req.file.filename)}`,mime_type:req.file.mimetype,file_name:req.file.filename,original_name:req.file.originalname,duration_seconds:Number(session.duration_seconds||30)};
+      const payload={url:`${origin}/files/qr-to-screen/${encodeURIComponent(fileName)}`,mime_type:mimeType,file_name:fileName,original_name:req.file.originalname,duration_seconds:Number(session.duration_seconds||30)};
       const cmd=(await q(`INSERT INTO cx_player_commands(screen_id,type,payload,status,source_type,source_id)
         VALUES($1,'QR_TO_SCREEN',$2::jsonb,'PENDING','QR_SESSION',NULL) RETURNING id`,[session.screen_id,JSON.stringify(payload)])).rows[0];
       await q('UPDATE cx_qr_sessions SET use_count=use_count+1,last_used_at=NOW() WHERE token=$1',[req.params.token]);
