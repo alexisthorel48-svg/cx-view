@@ -770,7 +770,7 @@ cxViewV33.register({ app, q, auth });
 cxViewV34.register({ app, q, superOnly, MEDIA_ROOT, PUBLIC_BASE_URL, notifyPlayer });
 cxViewV35.register({ app, q, PUBLIC_BASE_URL });
 cxViewIntegrationsV1.register({ app, q, auth, adminOnly, notifyPlayer, MEDIA_ROOT, PUBLIC_BASE_URL });
-cxViewIntegrationsInboundV1.register({ app, q, adminOnly });
+cxViewIntegrationsInboundV1.register({ app, q, adminOnly, MEDIA_ROOT });
 
 // ─── API PLAYER ───────────────────────────────────────────────────────────────
 app.get('/api/player/:code', async (req, res) => {
